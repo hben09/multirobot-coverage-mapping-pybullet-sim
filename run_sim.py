@@ -421,6 +421,13 @@ class MultiRobotMapper:
 
             # Current position
             pos, _ = p.getBasePositionAndOrientation(robot.id)
+
+            # Draw lidar range circle
+            lidar_range = 15  # meters
+            circle = plt.Circle((pos[0], pos[1]), lidar_range, color=color,
+                               fill=False, linewidth=1.5, alpha=0.15, zorder=3)
+            ax_grid.add_patch(circle)
+
             ax_grid.scatter(pos[0], pos[1], c=color, s=100, marker='^',
                           edgecolors='black', linewidths=1.5, zorder=5)
 
@@ -486,6 +493,13 @@ class MultiRobotMapper:
         # Plot robot current positions
         for robot, color in zip(self.robots, ['red', 'green', 'blue']):
             pos, _ = p.getBasePositionAndOrientation(robot.id)
+
+            # Draw lidar range circle
+            lidar_range = 15  # meters
+            circle = plt.Circle((pos[0], pos[1]), lidar_range, color=color,
+                               fill=False, linewidth=1.5, alpha=0.15, zorder=3)
+            ax_frontier.add_patch(circle)
+
             ax_frontier.scatter(pos[0], pos[1], c=color, s=150, marker='^',
                               edgecolors='black', linewidths=2, zorder=6)
 
