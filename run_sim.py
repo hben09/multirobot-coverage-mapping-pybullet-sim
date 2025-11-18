@@ -3,7 +3,6 @@ import pybullet_data
 import numpy as np
 import time
 import matplotlib
-matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
 from collections import defaultdict
 import os
@@ -111,6 +110,10 @@ class MultiRobotMapper:
         total_y = int((self.map_bounds['y_max'] - self.map_bounds['y_min']) / self.grid_resolution)
         self.total_cells = total_x * total_y
         self.coverage_history = []
+
+        # Real-time visualization
+        self.realtime_fig = None
+        self.realtime_axes = None
         
     def setup_environment(self):
         """Create the environment with walls and obstacles"""
@@ -307,6 +310,145 @@ class MultiRobotMapper:
         coverage_percent = (explored_count / self.total_cells) * 100
         return coverage_percent
 
+    def setup_realtime_visualization(self):
+        """Setup interactive real-time visualization window"""
+        plt.ion()  # Turn on interactive mode
+        self.realtime_fig = plt.figure(figsize=(15, 10))
+        gs = self.realtime_fig.add_gridspec(2, 2, hspace=0.3, wspace=0.3)
+
+        self.realtime_axes = {
+            'grid': self.realtime_fig.add_subplot(gs[0, 0]),
+            'frontier': self.realtime_fig.add_subplot(gs[0, 1]),
+            'coverage': self.realtime_fig.add_subplot(gs[1, :])
+        }
+
+        self.realtime_fig.suptitle('Real-Time Multi-Robot Coverage Mapping',
+                                   fontsize=14, fontweight='bold')
+        plt.show(block=False)
+
+    def update_realtime_visualization(self, step):
+        """Update the real-time visualization"""
+        if self.realtime_fig is None:
+            return
+
+        # Clear all axes
+        for ax in self.realtime_axes.values():
+            ax.clear()
+
+        # Update occupancy grid
+        ax_grid = self.realtime_axes['grid']
+        grid_x = int((self.map_bounds['x_max'] - self.map_bounds['x_min']) / self.grid_resolution)
+        grid_y = int((self.map_bounds['y_max'] - self.map_bounds['y_min']) / self.grid_resolution)
+        grid_image = np.ones((grid_y, grid_x, 3)) * 0.7  # Gray for unexplored
+
+        # Fill in explored and obstacle cells
+        for cell, value in self.occupancy_grid.items():
+            gx, gy = cell
+            if 0 <= gx < grid_x and 0 <= gy < grid_y:
+                if value == 1:  # Free space
+                    grid_image[gy, gx] = [1, 1, 1]  # White
+                elif value == 2:  # Obstacle
+                    grid_image[gy, gx] = [0, 0, 0]  # Black
+
+        extent = [self.map_bounds['x_min'], self.map_bounds['x_max'],
+                 self.map_bounds['y_min'], self.map_bounds['y_max']]
+        ax_grid.imshow(grid_image, origin='lower', extent=extent, interpolation='nearest')
+
+        # Plot robot trajectories and current positions
+        for robot, color in zip(self.robots, ['red', 'green', 'blue']):
+            if robot.trajectory:
+                traj = np.array(robot.trajectory)
+                ax_grid.plot(traj[:, 0], traj[:, 1], c=color, linewidth=1.5, alpha=0.6)
+
+            # Current position
+            pos, _ = p.getBasePositionAndOrientation(robot.id)
+            ax_grid.scatter(pos[0], pos[1], c=color, s=100, marker='^',
+                          edgecolors='black', linewidths=1.5, zorder=5)
+
+        ax_grid.set_xlim(-12, 12)
+        ax_grid.set_ylim(-12, 12)
+        ax_grid.set_aspect('equal')
+        ax_grid.grid(True, alpha=0.3)
+        ax_grid.set_title('Occupancy Grid\n(White=Free, Black=Obstacle, Gray=Unexplored)')
+        ax_grid.set_xlabel('X (meters)')
+        ax_grid.set_ylabel('Y (meters)')
+
+        # Add coverage text
+        coverage = self.calculate_coverage()
+        ax_grid.text(0.02, 0.98, f'Coverage: {coverage:.1f}%\nCells: {len(self.explored_cells)}/{self.total_cells}\nStep: {step}',
+                    transform=ax_grid.transAxes, verticalalignment='top',
+                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.9),
+                    fontsize=9, fontweight='bold')
+
+        # Update frontier map
+        ax_frontier = self.realtime_axes['frontier']
+        frontiers = self.detect_frontiers()
+
+        # Plot explored area
+        explored_points = []
+        for cell in self.explored_cells:
+            if self.occupancy_grid.get(cell) == 1:
+                x, y = self.grid_to_world(cell[0], cell[1])
+                explored_points.append([x, y])
+
+        if explored_points:
+            explored_array = np.array(explored_points)
+            ax_frontier.scatter(explored_array[:, 0], explored_array[:, 1],
+                              c='lightblue', s=3, alpha=0.4, marker='s')
+
+        # Plot obstacles
+        obstacle_points = []
+        for cell in self.obstacle_cells:
+            x, y = self.grid_to_world(cell[0], cell[1])
+            obstacle_points.append([x, y])
+
+        if obstacle_points:
+            obstacle_array = np.array(obstacle_points)
+            ax_frontier.scatter(obstacle_array[:, 0], obstacle_array[:, 1],
+                              c='black', s=3, marker='s')
+
+        # Plot frontiers
+        if frontiers:
+            frontier_points = [self.grid_to_world(cell[0], cell[1]) for cell in frontiers]
+            frontier_array = np.array(frontier_points)
+            ax_frontier.scatter(frontier_array[:, 0], frontier_array[:, 1],
+                              c='yellow', s=25, marker='o', edgecolors='orange',
+                              linewidths=1.5, label='Frontiers', zorder=5)
+
+        # Plot robot current positions
+        for robot, color in zip(self.robots, ['red', 'green', 'blue']):
+            pos, _ = p.getBasePositionAndOrientation(robot.id)
+            ax_frontier.scatter(pos[0], pos[1], c=color, s=150, marker='^',
+                              edgecolors='black', linewidths=2, zorder=6)
+
+        ax_frontier.set_xlim(-12, 12)
+        ax_frontier.set_ylim(-12, 12)
+        ax_frontier.set_aspect('equal')
+        ax_frontier.grid(True, alpha=0.3)
+        ax_frontier.set_title(f'Frontier Detection\n({len(frontiers)} frontiers)')
+        ax_frontier.set_xlabel('X (meters)')
+        ax_frontier.set_ylabel('Y (meters)')
+
+        # Update coverage history
+        ax_coverage = self.realtime_axes['coverage']
+        if self.coverage_history:
+            steps, coverage_values = zip(*self.coverage_history)
+            ax_coverage.plot(steps, coverage_values, linewidth=2, color='blue')
+            ax_coverage.fill_between(steps, coverage_values, alpha=0.3, color='blue')
+            ax_coverage.axhline(y=coverage, color='red', linestyle='--', alpha=0.5)
+
+        ax_coverage.set_xlabel('Simulation Step')
+        ax_coverage.set_ylabel('Coverage (%)')
+        ax_coverage.set_title('Coverage Progress Over Time')
+        ax_coverage.grid(True, alpha=0.3)
+        ax_coverage.set_ylim(0, 100)
+        ax_coverage.set_xlim(0, max(2000, step))
+
+        # Force update
+        self.realtime_fig.canvas.draw()
+        self.realtime_fig.canvas.flush_events()
+        plt.pause(0.001)
+
     def simple_exploration_move(self, robot, step):
         """Simple movement pattern for exploration"""
         robot_idx = self.robots.index(robot)
@@ -324,11 +466,24 @@ class MultiRobotMapper:
 
         robot.move(linear, angular)
     
-    def run_simulation(self, steps=2000, scan_interval=10, use_gui=True):
-        """Run the simulation"""
+    def run_simulation(self, steps=2000, scan_interval=10, use_gui=True, realtime_viz=True, viz_update_interval=50):
+        """Run the simulation
+
+        Args:
+            steps: Number of simulation steps
+            scan_interval: How often to perform lidar scans
+            use_gui: Whether to show PyBullet GUI
+            realtime_viz: Whether to show real-time map visualization
+            viz_update_interval: How often to update the real-time visualization (in steps)
+        """
         print("Starting multi-robot mapping simulation...")
         print("Red, Green, and Blue robots are exploring the environment")
         print(f"Running for {steps} steps...")
+
+        # Setup real-time visualization if enabled
+        if realtime_viz:
+            print("Setting up real-time visualization...")
+            self.setup_realtime_visualization()
 
         for step in range(steps):
             # Move each robot
@@ -346,6 +501,10 @@ class MultiRobotMapper:
                 coverage = self.calculate_coverage()
                 self.coverage_history.append((step, coverage))
 
+            # Update real-time visualization
+            if realtime_viz and step % viz_update_interval == 0:
+                self.update_realtime_visualization(step)
+
             # Step simulation
             p.stepSimulation()
 
@@ -358,6 +517,11 @@ class MultiRobotMapper:
                 coverage = self.calculate_coverage()
                 num_frontiers = len(self.detect_frontiers())
                 print(f"Progress: {step}/{steps} steps | Coverage: {coverage:.1f}% | Frontiers: {num_frontiers}")
+
+        # Final update of real-time visualization
+        if realtime_viz:
+            self.update_realtime_visualization(steps)
+            print("\nReal-time visualization complete. Close the plot window to continue...")
 
         print("\nSimulation complete!")
         print(f"Robot 1 (Red) scanned {len(self.robots[0].lidar_data)} points")
@@ -372,6 +536,9 @@ class MultiRobotMapper:
         # Create output directory if it doesn't exist
         output_dir = 'outputs'
         os.makedirs(output_dir, exist_ok=True)
+
+        # Turn off interactive mode for saving
+        plt.ioff()
 
         fig = plt.figure(figsize=(18, 12))
         gs = fig.add_gridspec(2, 3, hspace=0.3, wspace=0.3)
@@ -550,19 +717,28 @@ def main():
     # Create mapper with GUI enabled
     mapper = MultiRobotMapper(use_gui=True)
 
-    # Run simulation
+    # Run simulation with real-time visualization
     try:
-        mapper.run_simulation(steps=2000, scan_interval=10, use_gui=True)
-        
-        # Generate map visualization
-        print("\nGenerating map visualization...")
-        
+        mapper.run_simulation(
+            steps=2000,
+            scan_interval=10,
+            use_gui=True,
+            realtime_viz=False,  # Enable real-time map visualization
+            viz_update_interval=50  # Update map every 50 steps
+        )
+
+        # Generate final static map visualization
+        print("\nGenerating final map visualization...")
+
         # Visualize results
         mapper.visualize_map()
-        
+
     except KeyboardInterrupt:
         print("\nSimulation interrupted by user")
     finally:
+        # Close real-time visualization if open
+        if mapper.realtime_fig is not None:
+            plt.close(mapper.realtime_fig)
         mapper.cleanup()
         print("PyBullet disconnected")
 
