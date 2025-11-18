@@ -14,7 +14,9 @@ class Robot:
         self.color = color
         self.lidar_data = []
         self.trajectory = []
-        
+        self.goal = None  # Goal position for manual control (x, y)
+        self.manual_control = False  # Whether this robot is under manual control
+
     def get_lidar_scan(self, num_rays=360, max_range=10):
         """Simulate lidar by casting rays in 360 degrees"""
         pos, orn = p.getBasePositionAndOrientation(self.id)
@@ -57,15 +59,51 @@ class Robot:
         pos, orn = p.getBasePositionAndOrientation(self.id)
         euler = p.getEulerFromQuaternion(orn)
         yaw = euler[2]
-        
+
         # Calculate new position
         new_x = pos[0] + linear_vel * np.cos(yaw) * 0.1
         new_y = pos[1] + linear_vel * np.sin(yaw) * 0.1
         new_yaw = yaw + angular_vel * 0.1
-        
+
         # Update position and orientation
         new_orn = p.getQuaternionFromEuler([0, 0, new_yaw])
         p.resetBasePositionAndOrientation(self.id, [new_x, new_y, 0.25], new_orn)
+
+    def navigate_to_goal(self):
+        """Navigate towards the goal position using simple proportional control"""
+        if self.goal is None:
+            return 0.0, 0.0
+
+        pos, orn = p.getBasePositionAndOrientation(self.id)
+        euler = p.getEulerFromQuaternion(orn)
+        yaw = euler[2]
+
+        # Calculate vector to goal
+        dx = self.goal[0] - pos[0]
+        dy = self.goal[1] - pos[1]
+        distance = np.sqrt(dx**2 + dy**2)
+
+        # If close enough to goal, mark as reached
+        if distance < 0.5:
+            self.goal = None
+            return 0.0, 0.0
+
+        # Calculate desired angle to goal
+        desired_angle = np.arctan2(dy, dx)
+
+        # Calculate angle difference
+        angle_diff = desired_angle - yaw
+        # Normalize to [-pi, pi]
+        angle_diff = np.arctan2(np.sin(angle_diff), np.cos(angle_diff))
+
+        # Proportional control
+        linear_vel = min(1.5, distance * 0.5)  # Scale with distance, max speed 1.5
+        angular_vel = angle_diff * 2.0  # Proportional to angle error
+
+        # Limit angular velocity
+        angular_vel = np.clip(angular_vel, -1.0, 1.0)
+
+        return linear_vel, angular_vel
 
 class MultiRobotMapper:
     def __init__(self, use_gui=True):
@@ -322,9 +360,30 @@ class MultiRobotMapper:
             'coverage': self.realtime_fig.add_subplot(gs[1, :])
         }
 
-        self.realtime_fig.suptitle('Real-Time Multi-Robot Coverage Mapping',
+        self.realtime_fig.suptitle('Real-Time Multi-Robot Coverage Mapping\n(Click on grid map to control RED robot)',
                                    fontsize=14, fontweight='bold')
+
+        # Add click event handler
+        self.realtime_fig.canvas.mpl_connect('button_press_event', self.on_map_click)
+
         plt.show(block=False)
+
+    def on_map_click(self, event):
+        """Handle mouse clicks on the map to set goals for Robot 0 (Red)"""
+        # Only respond to clicks on the grid axes
+        if event.inaxes == self.realtime_axes['grid']:
+            # Get click coordinates
+            x, y = event.xdata, event.ydata
+
+            # Check if click is within map bounds
+            if (self.map_bounds['x_min'] <= x <= self.map_bounds['x_max'] and
+                self.map_bounds['y_min'] <= y <= self.map_bounds['y_max']):
+
+                # Set goal for Robot 0 (Red robot)
+                self.robots[0].goal = (x, y)
+                self.robots[0].manual_control = True
+
+                print(f"RED robot goal set to: ({x:.2f}, {y:.2f})")
 
     def update_realtime_visualization(self, step):
         """Update the real-time visualization"""
@@ -364,6 +423,15 @@ class MultiRobotMapper:
             pos, _ = p.getBasePositionAndOrientation(robot.id)
             ax_grid.scatter(pos[0], pos[1], c=color, s=100, marker='^',
                           edgecolors='black', linewidths=1.5, zorder=5)
+
+            # Draw goal position if set
+            if robot.goal is not None:
+                ax_grid.scatter(robot.goal[0], robot.goal[1], c=color, s=200,
+                              marker='X', edgecolors='white', linewidths=2, zorder=6,
+                              label=f'Goal')
+                # Draw line from robot to goal
+                ax_grid.plot([pos[0], robot.goal[0]], [pos[1], robot.goal[1]],
+                           c=color, linestyle='--', linewidth=2, alpha=0.7, zorder=4)
 
         ax_grid.set_xlim(-12, 12)
         ax_grid.set_ylim(-12, 12)
@@ -453,18 +521,21 @@ class MultiRobotMapper:
         """Simple movement pattern for exploration"""
         robot_idx = self.robots.index(robot)
 
-        # Each robot follows a different pattern
-        if robot_idx == 0:  # Red robot - circular pattern
-            linear = 1.0
-            angular = 0.3
-        elif robot_idx == 1:  # Green robot - figure-8 pattern
-            linear = 1.0
-            angular = 0.5 * np.sin(step * 0.02)
-        else:  # Blue robot - spiral pattern
-            linear = 1.0
-            angular = 0.2 + 0.1 * np.sin(step * 0.01)
+        # Only Robot 0 (Red) can move - others stay stationary
+        if robot_idx != 0:
+            robot.move(0.0, 0.0)
+            return
 
-        robot.move(linear, angular)
+        # Check if robot 0 has a manual goal
+        if robot.manual_control and robot.goal is not None:
+            # Navigate to the goal
+            linear, angular = robot.navigate_to_goal()
+            robot.move(linear, angular)
+            return
+
+        # If robot 0 finished manual goal or hasn't been given one yet
+        # Stay in place waiting for next goal
+        robot.move(0.0, 0.0)
     
     def run_simulation(self, steps=2000, scan_interval=10, use_gui=True, realtime_viz=True, viz_update_interval=50):
         """Run the simulation
@@ -720,10 +791,10 @@ def main():
     # Run simulation with real-time visualization
     try:
         mapper.run_simulation(
-            steps=2000,
+            steps=10000,
             scan_interval=10,
             use_gui=True,
-            realtime_viz=False,  # Enable real-time map visualization
+            realtime_viz=True,  # Enable real-time map visualization
             viz_update_interval=50  # Update map every 50 steps
         )
 
