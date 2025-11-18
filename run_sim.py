@@ -6,6 +6,7 @@ import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
 from collections import defaultdict
+import os
 
 class Robot:
     def __init__(self, robot_id, position, color):
@@ -93,8 +94,23 @@ class MultiRobotMapper:
         self.robots = []
         self.create_robots()
         
-        # Mapping data
-        self.occupancy_grid = defaultdict(int)
+        # Mapping data - occupancy grid
+        self.grid_resolution = 0.5  # meters per cell
+        self.occupancy_grid = {}  # (grid_x, grid_y): 0=unknown, 1=free, 2=obstacle
+        self.explored_cells = set()
+        self.obstacle_cells = set()
+
+        # Define map boundaries based on environment
+        self.map_bounds = {
+            'x_min': -10, 'x_max': 10,
+            'y_min': -10, 'y_max': 10
+        }
+
+        # Coverage tracking
+        total_x = int((self.map_bounds['x_max'] - self.map_bounds['x_min']) / self.grid_resolution)
+        total_y = int((self.map_bounds['y_max'] - self.map_bounds['y_min']) / self.grid_resolution)
+        self.total_cells = total_x * total_y
+        self.coverage_history = []
         
     def setup_environment(self):
         """Create the environment with walls and obstacles"""
@@ -187,10 +203,114 @@ class MultiRobotMapper:
             robot = Robot(robot_id, pos, color)
             self.robots.append(robot)
     
+    def world_to_grid(self, x, y):
+        """Convert world coordinates to grid coordinates"""
+        grid_x = int((x - self.map_bounds['x_min']) / self.grid_resolution)
+        grid_y = int((y - self.map_bounds['y_min']) / self.grid_resolution)
+        return (grid_x, grid_y)
+
+    def grid_to_world(self, grid_x, grid_y):
+        """Convert grid coordinates to world coordinates"""
+        x = self.map_bounds['x_min'] + (grid_x + 0.5) * self.grid_resolution
+        y = self.map_bounds['y_min'] + (grid_y + 0.5) * self.grid_resolution
+        return (x, y)
+
+    def update_occupancy_grid(self, robot):
+        """Update occupancy grid based on robot's latest lidar scan"""
+        if not robot.lidar_data:
+            return
+
+        # Get robot position
+        pos, _ = p.getBasePositionAndOrientation(robot.id)
+        robot_grid = self.world_to_grid(pos[0], pos[1])
+
+        # Mark robot position as free
+        self.occupancy_grid[robot_grid] = 1
+        self.explored_cells.add(robot_grid)
+
+        # Process recent lidar hits (last scan)
+        recent_scans = robot.lidar_data[-180:] if len(robot.lidar_data) > 180 else robot.lidar_data
+
+        for hit_x, hit_y in recent_scans:
+            # Mark obstacle location
+            obstacle_grid = self.world_to_grid(hit_x, hit_y)
+            self.occupancy_grid[obstacle_grid] = 2
+            self.obstacle_cells.add(obstacle_grid)
+
+            # Ray trace from robot to obstacle to mark free cells
+            self.bresenham_line(robot_grid[0], robot_grid[1],
+                               obstacle_grid[0], obstacle_grid[1])
+
+    def bresenham_line(self, x0, y0, x1, y1):
+        """Bresenham's line algorithm to mark cells along a line as free"""
+        dx = abs(x1 - x0)
+        dy = abs(y1 - y0)
+        sx = 1 if x0 < x1 else -1
+        sy = 1 if y0 < y1 else -1
+        err = dx - dy
+
+        x, y = x0, y0
+        while True:
+            # Mark cell as free (but don't overwrite obstacles)
+            cell = (x, y)
+            if cell not in self.obstacle_cells:
+                self.occupancy_grid[cell] = 1
+                self.explored_cells.add(cell)
+
+            if x == x1 and y == y1:
+                break
+
+            e2 = 2 * err
+            if e2 > -dy:
+                err -= dy
+                x += sx
+            if e2 < dx:
+                err += dx
+                y += sy
+
+    def detect_frontiers(self):
+        """Detect frontier cells (boundary between explored and unexplored)"""
+        frontiers = set()
+
+        for cell in self.explored_cells:
+            if self.occupancy_grid.get(cell) != 1:  # Only check free cells
+                continue
+
+            # Check 8-connected neighbors
+            x, y = cell
+            for dx in [-1, 0, 1]:
+                for dy in [-1, 0, 1]:
+                    if dx == 0 and dy == 0:
+                        continue
+
+                    neighbor = (x + dx, y + dy)
+
+                    # Check if neighbor is within bounds
+                    world_x, world_y = self.grid_to_world(neighbor[0], neighbor[1])
+                    if not (self.map_bounds['x_min'] <= world_x <= self.map_bounds['x_max'] and
+                           self.map_bounds['y_min'] <= world_y <= self.map_bounds['y_max']):
+                        continue
+
+                    # If neighbor is unknown, current cell is a frontier
+                    if neighbor not in self.occupancy_grid:
+                        frontiers.add(cell)
+                        break
+
+                if cell in frontiers:
+                    break
+
+        return frontiers
+
+    def calculate_coverage(self):
+        """Calculate percentage of explored area"""
+        explored_count = len(self.explored_cells)
+        coverage_percent = (explored_count / self.total_cells) * 100
+        return coverage_percent
+
     def simple_exploration_move(self, robot, step):
         """Simple movement pattern for exploration"""
         robot_idx = self.robots.index(robot)
-        
+
         # Each robot follows a different pattern
         if robot_idx == 0:  # Red robot - circular pattern
             linear = 1.0
@@ -201,7 +321,7 @@ class MultiRobotMapper:
         else:  # Blue robot - spiral pattern
             linear = 1.0
             angular = 0.2 + 0.1 * np.sin(step * 0.01)
-        
+
         robot.move(linear, angular)
     
     def run_simulation(self, steps=2000, scan_interval=10, use_gui=True):
@@ -219,6 +339,12 @@ class MultiRobotMapper:
             if step % scan_interval == 0:
                 for robot in self.robots:
                     robot.get_lidar_scan(num_rays=180, max_range=15)
+                    # Update occupancy grid with new scan data
+                    self.update_occupancy_grid(robot)
+
+                # Track coverage over time
+                coverage = self.calculate_coverage()
+                self.coverage_history.append((step, coverage))
 
             # Step simulation
             p.stepSimulation()
@@ -227,74 +353,194 @@ class MultiRobotMapper:
             if use_gui:
                 time.sleep(1./240.)  # 240 Hz simulation rate
 
-            # Print progress
+            # Print progress with coverage
             if step % 200 == 0:
-                print(f"Progress: {step}/{steps} steps completed")
-        
-        print("Simulation complete!")
+                coverage = self.calculate_coverage()
+                num_frontiers = len(self.detect_frontiers())
+                print(f"Progress: {step}/{steps} steps | Coverage: {coverage:.1f}% | Frontiers: {num_frontiers}")
+
+        print("\nSimulation complete!")
         print(f"Robot 1 (Red) scanned {len(self.robots[0].lidar_data)} points")
         print(f"Robot 2 (Green) scanned {len(self.robots[1].lidar_data)} points")
         print(f"Robot 3 (Blue) scanned {len(self.robots[2].lidar_data)} points")
+        final_coverage = self.calculate_coverage()
+        print(f"\nFinal Coverage: {final_coverage:.2f}%")
+        print(f"Explored Cells: {len(self.explored_cells)}/{self.total_cells}")
     
     def visualize_map(self):
-        """Visualize the mapped environment"""
-        fig, axes = plt.subplots(2, 2, figsize=(14, 14))
-        
+        """Visualize the mapped environment with occupancy grid and frontiers"""
+        # Create output directory if it doesn't exist
+        output_dir = 'outputs'
+        os.makedirs(output_dir, exist_ok=True)
+
+        fig = plt.figure(figsize=(18, 12))
+        gs = fig.add_gridspec(2, 3, hspace=0.3, wspace=0.3)
+
         colors = ['red', 'green', 'blue']
         robot_names = ['Robot 1 (Red)', 'Robot 2 (Green)', 'Robot 3 (Blue)']
-        
-        # Individual robot maps
-        for idx, (ax, robot, color, name) in enumerate(zip(axes.flat[:3], 
-                                                           self.robots, 
-                                                           colors, 
-                                                           robot_names)):
+
+        # 1. Occupancy Grid Map
+        ax_grid = fig.add_subplot(gs[0, 0])
+        self._plot_occupancy_grid(ax_grid)
+
+        # 2. Frontier Map
+        ax_frontier = fig.add_subplot(gs[0, 1])
+        self._plot_frontier_map(ax_frontier)
+
+        # 3. Coverage Over Time
+        ax_coverage = fig.add_subplot(gs[0, 2])
+        self._plot_coverage_history(ax_coverage)
+
+        # 4-6. Individual robot trajectories with lidar
+        for idx, (robot, color, name) in enumerate(zip(self.robots, colors, robot_names)):
+            ax = fig.add_subplot(gs[1, idx])
+
             if robot.lidar_data:
                 points = np.array(robot.lidar_data)
-                ax.scatter(points[:, 0], points[:, 1], c=color, s=1, alpha=0.3)
-                
-                # Plot trajectory
-                if robot.trajectory:
-                    traj = np.array(robot.trajectory)
-                    ax.plot(traj[:, 0], traj[:, 1], c=color, linewidth=2, 
-                           label='Trajectory')
-            
+                ax.scatter(points[:, 0], points[:, 1], c=color, s=1, alpha=0.2)
+
+            if robot.trajectory:
+                traj = np.array(robot.trajectory)
+                ax.plot(traj[:, 0], traj[:, 1], c=color, linewidth=2, label='Trajectory')
+                # Mark start and end
+                ax.scatter(traj[0, 0], traj[0, 1], c='black', s=100, marker='o',
+                          label='Start', zorder=5)
+                ax.scatter(traj[-1, 0], traj[-1, 1], c='gold', s=100, marker='*',
+                          label='End', zorder=5)
+
             ax.set_xlim(-12, 12)
             ax.set_ylim(-12, 12)
             ax.set_aspect('equal')
             ax.grid(True, alpha=0.3)
-            ax.set_title(f'{name} Map')
+            ax.set_title(f'{name} Trajectory')
             ax.set_xlabel('X (meters)')
             ax.set_ylabel('Y (meters)')
-            ax.legend()
-        
-        # Combined map
-        ax_combined = axes.flat[3]
-        for robot, color, name in zip(self.robots, colors, robot_names):
-            if robot.lidar_data:
-                points = np.array(robot.lidar_data)
-                ax_combined.scatter(points[:, 0], points[:, 1], c=color, s=1, 
-                                  alpha=0.3, label=name)
-                
-                # Plot trajectories
-                if robot.trajectory:
-                    traj = np.array(robot.trajectory)
-                    ax_combined.plot(traj[:, 0], traj[:, 1], c=color, 
-                                   linewidth=2, alpha=0.7)
-        
-        ax_combined.set_xlim(-12, 12)
-        ax_combined.set_ylim(-12, 12)
-        ax_combined.set_aspect('equal')
-        ax_combined.grid(True, alpha=0.3)
-        ax_combined.set_title('Combined Multi-Robot Map')
-        ax_combined.set_xlabel('X (meters)')
-        ax_combined.set_ylabel('Y (meters)')
-        ax_combined.legend()
-        
-        plt.tight_layout()
-        plt.savefig('/mnt/user-data/outputs/multi_robot_map.png', dpi=150, 
-                   bbox_inches='tight')
-        print("Map visualization saved!")
+            ax.legend(fontsize=8)
+
+        # Add overall title with coverage info
+        final_coverage = self.calculate_coverage()
+        fig.suptitle(f'Multi-Robot Coverage Mapping - Final Coverage: {final_coverage:.2f}%',
+                    fontsize=16, fontweight='bold')
+
+        output_path = os.path.join(output_dir, 'multi_robot_map.png')
+        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        print(f"Map visualization saved to {output_path}!")
         plt.close()
+
+    def _plot_occupancy_grid(self, ax):
+        """Plot the occupancy grid"""
+        # Create grid image
+        grid_x = int((self.map_bounds['x_max'] - self.map_bounds['x_min']) / self.grid_resolution)
+        grid_y = int((self.map_bounds['y_max'] - self.map_bounds['y_min']) / self.grid_resolution)
+        grid_image = np.ones((grid_y, grid_x, 3)) * 0.7  # Gray for unexplored
+
+        # Fill in explored and obstacle cells
+        for cell, value in self.occupancy_grid.items():
+            gx, gy = cell
+            if 0 <= gx < grid_x and 0 <= gy < grid_y:
+                if value == 1:  # Free space
+                    grid_image[gy, gx] = [1, 1, 1]  # White
+                elif value == 2:  # Obstacle
+                    grid_image[gy, gx] = [0, 0, 0]  # Black
+
+        # Plot robot trajectories on grid
+        for robot, color in zip(self.robots, ['red', 'green', 'blue']):
+            if robot.trajectory:
+                traj = np.array(robot.trajectory)
+                ax.plot(traj[:, 0], traj[:, 1], c=color, linewidth=2, alpha=0.7)
+
+        extent = [self.map_bounds['x_min'], self.map_bounds['x_max'],
+                 self.map_bounds['y_min'], self.map_bounds['y_max']]
+        ax.imshow(grid_image, origin='lower', extent=extent, interpolation='nearest')
+
+        ax.set_xlim(-12, 12)
+        ax.set_ylim(-12, 12)
+        ax.set_aspect('equal')
+        ax.grid(True, alpha=0.3)
+        ax.set_title('Occupancy Grid Map\n(White=Free, Black=Obstacle, Gray=Unexplored)')
+        ax.set_xlabel('X (meters)')
+        ax.set_ylabel('Y (meters)')
+
+        # Add legend for explored percentage
+        explored_pct = self.calculate_coverage()
+        ax.text(0.02, 0.98, f'Explored: {explored_pct:.1f}%\nCells: {len(self.explored_cells)}/{self.total_cells}',
+               transform=ax.transAxes, verticalalignment='top',
+               bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8),
+               fontsize=9)
+
+    def _plot_frontier_map(self, ax):
+        """Plot frontiers (boundary between explored and unexplored)"""
+        # Get frontiers
+        frontiers = self.detect_frontiers()
+
+        # Plot explored area
+        for cell in self.explored_cells:
+            if self.occupancy_grid.get(cell) == 1:  # Free space
+                x, y = self.grid_to_world(cell[0], cell[1])
+                ax.plot(x, y, 's', color='lightblue', markersize=2, alpha=0.5)
+
+        # Plot obstacles
+        for cell in self.obstacle_cells:
+            x, y = self.grid_to_world(cell[0], cell[1])
+            ax.plot(x, y, 's', color='black', markersize=2)
+
+        # Plot frontiers
+        if frontiers:
+            frontier_points = [self.grid_to_world(cell[0], cell[1]) for cell in frontiers]
+            frontier_array = np.array(frontier_points)
+            ax.scatter(frontier_array[:, 0], frontier_array[:, 1],
+                      c='yellow', s=20, marker='o', edgecolors='orange',
+                      linewidths=1, label='Frontiers', zorder=5)
+
+        # Plot robot current positions
+        for robot, color in zip(self.robots, ['red', 'green', 'blue']):
+            pos, _ = p.getBasePositionAndOrientation(robot.id)
+            ax.scatter(pos[0], pos[1], c=color, s=150, marker='^',
+                      edgecolors='black', linewidths=2, zorder=6)
+
+        ax.set_xlim(-12, 12)
+        ax.set_ylim(-12, 12)
+        ax.set_aspect('equal')
+        ax.grid(True, alpha=0.3)
+        ax.set_title(f'Frontier Map\n(Yellow=Frontiers, Triangles=Robots)')
+        ax.set_xlabel('X (meters)')
+        ax.set_ylabel('Y (meters)')
+
+        # Add stats
+        num_frontiers = len(frontiers)
+        ax.text(0.02, 0.98, f'Frontiers: {num_frontiers}\nExplored: {len(self.explored_cells)}\nObstacles: {len(self.obstacle_cells)}',
+               transform=ax.transAxes, verticalalignment='top',
+               bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8),
+               fontsize=9)
+
+        if frontiers:
+            ax.legend(loc='upper right', fontsize=8)
+
+    def _plot_coverage_history(self, ax):
+        """Plot coverage percentage over time"""
+        if self.coverage_history:
+            steps, coverage = zip(*self.coverage_history)
+            ax.plot(steps, coverage, linewidth=2, color='blue', marker='o',
+                   markersize=3, markevery=10)
+            ax.fill_between(steps, coverage, alpha=0.3, color='blue')
+
+            ax.set_xlabel('Simulation Step')
+            ax.set_ylabel('Coverage (%)')
+            ax.set_title('Coverage Progress Over Time')
+            ax.grid(True, alpha=0.3)
+            ax.set_ylim(0, max(100, max(coverage) * 1.1))
+
+            # Add final coverage annotation
+            final_coverage = coverage[-1]
+            ax.axhline(y=final_coverage, color='red', linestyle='--', alpha=0.5)
+            ax.text(0.98, 0.02, f'Final: {final_coverage:.2f}%',
+                   transform=ax.transAxes, horizontalalignment='right',
+                   bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.8),
+                   fontsize=10, fontweight='bold')
+        else:
+            ax.text(0.5, 0.5, 'No coverage data',
+                   transform=ax.transAxes, horizontalalignment='center')
+            ax.set_title('Coverage Progress Over Time')
     
     def cleanup(self):
         """Disconnect from PyBullet"""
