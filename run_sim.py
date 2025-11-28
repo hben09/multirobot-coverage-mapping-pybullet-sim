@@ -32,24 +32,37 @@ class Robot:
         euler = p.getEulerFromQuaternion(orn)
         yaw = euler[2]
 
+        # --- FIX: Mount Lidar Higher ---
+        # Move the lidar "sensor" up by 0.3 meters to clear the robot's own body
+        # and avoid hitting the floor during physics jitter.
+        lidar_height_offset = 0.3 
+        lidar_z = pos[2] + lidar_height_offset
+
         ray_from = []
         ray_to = []
 
         for i in range(num_rays):
             angle = yaw + (2.0 * np.pi * i / num_rays)
-            ray_from.append(pos)
+            
+            # Ray starts at the raised lidar position
+            ray_from.append([pos[0], pos[1], lidar_z])
+            
+            # Ray ends at max_range, maintaining the same height
             ray_to.append([
                 pos[0] + max_range * np.cos(angle),
                 pos[1] + max_range * np.sin(angle),
-                pos[2]
+                lidar_z
             ])
 
         results = p.rayTestBatch(ray_from, ray_to)
 
         scan_points = []
         for i, result in enumerate(results):
+            hit_object_id = result[0]
             hit_fraction = result[2]
-            if hit_fraction < 1.0:
+            
+            # We still keep the ID check as a safety measure
+            if hit_fraction < 1.0 and hit_object_id != self.id:
                 hit_position = result[3]
                 scan_points.append((hit_position[0], hit_position[1]))
 
