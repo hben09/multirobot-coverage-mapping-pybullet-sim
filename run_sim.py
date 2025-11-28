@@ -631,8 +631,21 @@ def main():
     print("\nEnvironment types:")
     print("  1. Maze (complex maze with walls)")
     print("  2. Blank box (empty room with single wall in middle)")
-    env_type_input = input("Choose environment type (1/2, default=1): ").strip()
-    env_type = 'blank_box' if env_type_input == '2' else 'maze'
+    print("  3. Cave (organic cellular automata)")
+    print("  4. Tunnel (long winding corridor)")
+    print("  5. Rooms (dungeon with connected chambers)")
+    env_type_input = input("Choose environment type (1-5, default=1): ").strip()
+
+    if env_type_input == '2':
+        env_type = 'blank_box'
+    elif env_type_input == '3':
+        env_type = 'cave'
+    elif env_type_input == '4':
+        env_type = 'tunnel'
+    elif env_type_input == '5':
+        env_type = 'rooms'
+    else:
+        env_type = 'maze'
 
     # GUI configuration
     gui_input = input("Show PyBullet 3D window? (y/n, default=n): ").strip().lower()
@@ -645,7 +658,14 @@ def main():
     else:
         max_steps = None  # Unlimited
 
-    env_name = "blank box with single wall" if env_type == 'blank_box' else "maze"
+    env_name_map = {
+        'maze': 'maze',
+        'blank_box': 'blank box with single wall',
+        'cave': 'cave system',
+        'tunnel': 'winding tunnel',
+        'rooms': 'dungeon with rooms'
+    }
+    env_name = env_name_map.get(env_type, 'maze')
     print(f"\nCreating {maze_size}x{maze_size} {env_name} with {cell_size}m cells...")
     if not use_gui:
         print("Running in headless mode (no 3D window, faster simulation)")
