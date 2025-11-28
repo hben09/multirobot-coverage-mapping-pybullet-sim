@@ -100,7 +100,7 @@ class Robot:
 class SubterraneanMapper:
     """Multi-robot mapper for subterranean maze environments"""
 
-    def __init__(self, use_gui=True, maze_size=(10, 10), cell_size=2.0, env_seed=None):
+    def __init__(self, use_gui=True, maze_size=(10, 10), cell_size=2.0, env_seed=None, env_type='maze'):
         """
         Initialize the mapper with a maze environment
 
@@ -109,6 +109,7 @@ class SubterraneanMapper:
             maze_size: Tuple (width, height) of maze in cells
             cell_size: Size of each maze cell in meters
             env_seed: Random seed for reproducible environments
+            env_type: Type of environment ('maze' or 'blank_box')
         """
         # Create maze environment (which handles PyBullet connection internally)
         self.env = MazeEnvironment(
@@ -120,8 +121,8 @@ class SubterraneanMapper:
             seed=env_seed
         )
 
-        # Generate and build the maze
-        self.env.generate_maze()
+        # Generate and build the environment
+        self.env.generate_maze(env_type=env_type)
         self.env.build_walls()
 
         # Store physics client reference
@@ -578,6 +579,13 @@ def main():
     seed_input = input("Enter random seed (press Enter for random): ").strip()
     env_seed = int(seed_input) if seed_input.isdigit() else None
 
+    # Environment type configuration
+    print("\nEnvironment types:")
+    print("  1. Maze (complex maze with walls)")
+    print("  2. Blank box (empty room with single wall in middle)")
+    env_type_input = input("Choose environment type (1/2, default=1): ").strip()
+    env_type = 'blank_box' if env_type_input == '2' else 'maze'
+
     # GUI configuration
     gui_input = input("Show PyBullet 3D window? (y/n, default=n): ").strip().lower()
     use_gui = gui_input == 'y'
@@ -589,7 +597,8 @@ def main():
     else:
         max_steps = None  # Unlimited
 
-    print(f"\nCreating {maze_size}x{maze_size} maze with {cell_size}m cells...")
+    env_name = "blank box with single wall" if env_type == 'blank_box' else "maze"
+    print(f"\nCreating {maze_size}x{maze_size} {env_name} with {cell_size}m cells...")
     if not use_gui:
         print("Running in headless mode (no 3D window, faster simulation)")
     if max_steps is None:
@@ -599,7 +608,8 @@ def main():
         use_gui=use_gui,
         maze_size=(maze_size, maze_size),
         cell_size=cell_size,
-        env_seed=env_seed
+        env_seed=env_seed,
+        env_type=env_type
     )
 
     try:

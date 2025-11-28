@@ -80,10 +80,13 @@ class MazeEnvironment:
                 cameraTargetPosition=[maze_center_x, maze_center_y, 0]
             )
     
-    def generate_maze(self):
+    def generate_maze(self, env_type='maze'):
         """
-        Generate a random maze using recursive backtracking algorithm.
-        
+        Generate an environment based on the specified type.
+
+        Args:
+            env_type: 'maze' for maze generation, 'blank_box' for empty room with single wall
+
         The maze is represented as a 2D grid where:
         - 0 = passage (empty space)
         - 1 = wall
@@ -93,23 +96,47 @@ class MazeEnvironment:
         grid_width = self.maze_width * 2 + 1
         grid_height = self.maze_height * 2 + 1
         self.maze_grid = np.ones((grid_height, grid_width), dtype=int)
-        
-        # Recursive backtracking maze generation
-        self._carve_passages(1, 1)
-        
-        # Create entrance on the outside (bottom wall)
-        entrance_x = random.choice(range(1, grid_width - 1, 2))
+
+        if env_type == 'blank_box':
+            # Create empty box with perimeter walls and single wall in middle
+            self._generate_blank_box()
+        else:
+            # Recursive backtracking maze generation
+            self._carve_passages(1, 1)
+
+            # Create entrance on the outside (bottom wall)
+            entrance_x = random.choice(range(1, grid_width - 1, 2))
+            self.maze_grid[0, entrance_x] = 0
+            self.entrance_cell = (entrance_x, 0)
+
+            # Optionally create an exit on the opposite side
+            exit_x = random.choice(range(1, grid_width - 1, 2))
+            self.maze_grid[grid_height - 1, exit_x] = 0
+
+            # Ensure maze is fully connected and has interesting paths
+            self._add_loops(0.1)  # Add some loops for more interesting exploration
+
+        return self.maze_grid
+
+    def _generate_blank_box(self):
+        """Generate a blank box environment with perimeter walls and single wall in middle."""
+        grid_height, grid_width = self.maze_grid.shape
+
+        # Fill interior with empty space
+        self.maze_grid[1:-1, 1:-1] = 0
+
+        # Add a single wall in the middle (vertical)
+        mid_x = grid_width // 2
+        wall_start_y = grid_height // 4
+        wall_end_y = 3 * grid_height // 4
+
+        for y in range(wall_start_y, wall_end_y):
+            self.maze_grid[y, mid_x] = 1
+
+        # Create entrance at bottom center
+        entrance_x = grid_width // 2
         self.maze_grid[0, entrance_x] = 0
         self.entrance_cell = (entrance_x, 0)
-        
-        # Optionally create an exit on the opposite side
-        exit_x = random.choice(range(1, grid_width - 1, 2))
-        self.maze_grid[grid_height - 1, exit_x] = 0
-        
-        # Ensure maze is fully connected and has interesting paths
-        self._add_loops(0.1)  # Add some loops for more interesting exploration
-        
-        return self.maze_grid
     
     def _carve_passages(self, cx, cy):
         """Carve passages in the maze using recursive backtracking."""
