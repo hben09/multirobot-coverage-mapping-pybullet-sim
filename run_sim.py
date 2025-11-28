@@ -103,13 +103,6 @@ class SubterraneanMapper:
     def __init__(self, use_gui=True, maze_size=(10, 10), cell_size=2.0, env_seed=None, env_type='maze'):
         """
         Initialize the mapper with a maze environment
-
-        Args:
-            use_gui: Whether to show PyBullet GUI
-            maze_size: Tuple (width, height) of maze in cells
-            cell_size: Size of each maze cell in meters
-            env_seed: Random seed for reproducible environments
-            env_type: Type of environment ('maze' or 'blank_box')
         """
         # Create maze environment (which handles PyBullet connection internally)
         self.env = MazeEnvironment(
@@ -138,20 +131,40 @@ class SubterraneanMapper:
         self.explored_cells = set()
         self.obstacle_cells = set()
 
-        # Calculate environment bounds from maze
-        maze_world_width = self.env.maze_grid.shape[1] * self.env.cell_size / 2
-        maze_world_height = self.env.maze_grid.shape[0] * self.env.cell_size / 2
+        # --- CALCULATE EXACT MAP BOUNDS ---
+        # The physical blocks are centered at grid_index * block_size.
+        # This means they extend +/- half_block from that center.
+        # Previously, we assumed bounds started at 0, which cut off the "negative" half of the first row/col.
+        
+        block_physical_size = self.env.cell_size / 2.0
+        half_block = block_physical_size / 2.0
+        
+        # Calculate total width based on number of blocks
+        maze_world_width = self.env.maze_grid.shape[1] * block_physical_size
+        maze_world_height = self.env.maze_grid.shape[0] * block_physical_size
+        
+        # Adjust bounds to strictly enclose the physical blocks
         self.map_bounds = {
-            'x_min': 0,
-            'x_max': maze_world_width,
-            'y_min': 0,
-            'y_max': maze_world_height
+            'x_min': -half_block,
+            'x_max': maze_world_width - half_block,
+            'y_min': -half_block,
+            'y_max': maze_world_height - half_block
         }
 
-        # Coverage tracking
+        # --- UPDATED COVERAGE TRACKING ---
+        self.scale_factor = block_physical_size / self.grid_resolution
+
+        # Count how many blocks in the maze are actually empty passages (value 0)
+        ground_truth_zeros = np.sum(self.env.maze_grid == 0)
+
+        # Calculate expected total free cells in our high-res map
+        self.total_free_cells = ground_truth_zeros * (self.scale_factor ** 2)
+        
+        # Keep track of total bounding box cells just for grid dimensions
         total_x = int((self.map_bounds['x_max'] - self.map_bounds['x_min']) / self.grid_resolution)
         total_y = int((self.map_bounds['y_max'] - self.map_bounds['y_min']) / self.grid_resolution)
-        self.total_cells = total_x * total_y
+        self.total_grid_dims = total_x * total_y
+        
         self.coverage_history = []
 
         # Real-time visualization
@@ -285,9 +298,43 @@ class SubterraneanMapper:
         return frontiers
 
     def calculate_coverage(self):
-        """Calculate percentage of explored area"""
-        explored_count = len(self.explored_cells)
-        coverage_percent = (explored_count / self.total_cells) * 100
+        """
+        Calculate percentage of reachable free space explored.
+        Strictly validates against the ASCII maze_grid Ground Truth.
+        Only counts a cell if it corresponds to a '0' (Passage) in the maze layout.
+        """
+        if self.total_free_cells == 0:
+            return 0.0
+
+        block_size = self.env.cell_size / 2.0
+        valid_explored_count = 0
+
+        for cell in self.explored_cells:
+            # We don't care if it's Free (1) or Obstacle (2) in the occupancy grid.
+            # We care if the *Physical Location* is supposed to be Empty Space.
+            # This handles edge cases where lidar hits the "inside" face of a passage.
+
+            # Get world position of the grid cell center
+            wx, wy = self.grid_to_world(cell[0], cell[1])
+            
+            # Convert world position to Maze Grid Index
+            # Maze indices are centered. Index 0 covers [-block/2, +block/2].
+            # So: Index = (World + Half_Block) / Block
+            mx = int((wx + block_size/2) / block_size)
+            my = int((wy + block_size/2) / block_size)
+            
+            # Check bounds and Ground Truth
+            if (0 <= mx < self.env.maze_grid.shape[1] and 
+                0 <= my < self.env.maze_grid.shape[0]):
+                
+                # Check if this cell is part of a Passage (0)
+                # If it is, we count it as valid explored space.
+                # If it is a Wall (1), we ignore it (filled parts don't count).
+                if self.env.maze_grid[my, mx] == 0:
+                    valid_explored_count += 1
+
+        # Cap at 100% just in case of minor floating point rounding edges
+        coverage_percent = min(100.0, (valid_explored_count / self.total_free_cells) * 100)
         return coverage_percent
 
     def setup_realtime_visualization(self):
@@ -382,7 +429,8 @@ class SubterraneanMapper:
         ax_grid.set_ylabel('Y (meters)')
 
         coverage = self.calculate_coverage()
-        ax_grid.text(0.02, 0.98, f'Coverage: {coverage:.1f}%\nCells: {len(self.explored_cells)}/{self.total_cells}\nStep: {step}',
+        # Modified label to show coverage of FREE space
+        ax_grid.text(0.02, 0.98, f'Coverage: {coverage:.1f}%\nFree Space Explored',
                     transform=ax_grid.transAxes, verticalalignment='top',
                     bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.9),
                     fontsize=9, fontweight='bold')
@@ -553,7 +601,7 @@ class SubterraneanMapper:
         print("\nSimulation complete!")
         final_coverage = self.calculate_coverage()
         print(f"Final Coverage: {final_coverage:.2f}%")
-        print(f"Explored Cells: {len(self.explored_cells)}/{self.total_cells}")
+        print(f"Explored Free Cells: {int(final_coverage/100 * self.total_free_cells)}/{int(self.total_free_cells)}")
 
     def cleanup(self):
         """Disconnect from PyBullet"""
