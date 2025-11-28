@@ -501,13 +501,21 @@ class SubterraneanMapper:
     def run_simulation(self, steps=5000, scan_interval=10, use_gui=True, realtime_viz=True, viz_update_interval=50):
         """Run the simulation"""
         print("Starting subterranean maze mapping simulation...")
-        print(f"Running for {steps} steps...")
+        if steps is None:
+            print("Running unlimited steps (press Ctrl+C to stop)...")
+        else:
+            print(f"Running for {steps} steps...")
 
         if realtime_viz:
             print("Setting up real-time visualization...")
             self.setup_realtime_visualization()
 
-        for step in range(steps):
+        step = 0
+        while True:
+            # Check if we've reached the step limit
+            if steps is not None and step >= steps:
+                break
+
             for robot in self.robots:
                 self.simple_exploration_move(robot, step)
 
@@ -530,10 +538,15 @@ class SubterraneanMapper:
             if step % 200 == 0:
                 coverage = self.calculate_coverage()
                 num_frontiers = len(self.detect_frontiers())
-                print(f"Progress: {step}/{steps} steps | Coverage: {coverage:.1f}% | Frontiers: {num_frontiers}")
+                if steps is None:
+                    print(f"Progress: Step {step} | Coverage: {coverage:.1f}% | Frontiers: {num_frontiers}")
+                else:
+                    print(f"Progress: {step}/{steps} steps | Coverage: {coverage:.1f}% | Frontiers: {num_frontiers}")
+
+            step += 1
 
         if realtime_viz:
-            self.update_realtime_visualization(steps)
+            self.update_realtime_visualization(step)
             print("\nReal-time visualization complete.")
 
         print("\nSimulation complete!")
@@ -565,9 +578,25 @@ def main():
     seed_input = input("Enter random seed (press Enter for random): ").strip()
     env_seed = int(seed_input) if seed_input.isdigit() else None
 
+    # GUI configuration
+    gui_input = input("Show PyBullet 3D window? (y/n, default=n): ").strip().lower()
+    use_gui = gui_input == 'y'
+
+    # Simulation steps configuration
+    steps_input = input("Number of simulation steps (press Enter for unlimited): ").strip()
+    if steps_input.isdigit():
+        max_steps = int(steps_input)
+    else:
+        max_steps = None  # Unlimited
+
     print(f"\nCreating {maze_size}x{maze_size} maze with {cell_size}m cells...")
+    if not use_gui:
+        print("Running in headless mode (no 3D window, faster simulation)")
+    if max_steps is None:
+        print("Running unlimited steps (press Ctrl+C to stop)")
+
     mapper = SubterraneanMapper(
-        use_gui=True,
+        use_gui=use_gui,
         maze_size=(maze_size, maze_size),
         cell_size=cell_size,
         env_seed=env_seed
@@ -575,9 +604,9 @@ def main():
 
     try:
         mapper.run_simulation(
-            steps=8000,
+            steps=max_steps,
             scan_interval=10,
-            use_gui=True,
+            use_gui=use_gui,
             realtime_viz=True,
             viz_update_interval=50
         )
