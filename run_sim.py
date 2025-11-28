@@ -71,17 +71,22 @@ class Robot:
         return scan_points
 
     def move(self, linear_vel, angular_vel):
-        """Move robot with linear and angular velocity"""
+        """
+        Move robot using physics velocity control.
+        This allows the robot to collide with walls and slide, rather than passing through.
+        """
         pos, orn = p.getBasePositionAndOrientation(self.id)
         euler = p.getEulerFromQuaternion(orn)
         yaw = euler[2]
 
-        new_x = pos[0] + linear_vel * np.cos(yaw) * 0.1
-        new_y = pos[1] + linear_vel * np.sin(yaw) * 0.1
-        new_yaw = yaw + angular_vel * 0.1
+        # Calculate velocity vector based on current heading
+        vx = linear_vel * np.cos(yaw)
+        vy = linear_vel * np.sin(yaw)
 
-        new_orn = p.getQuaternionFromEuler([0, 0, new_yaw])
-        p.resetBasePositionAndOrientation(self.id, [new_x, new_y, 0.25], new_orn)
+        # Apply velocity to the robot's center of mass
+        # [vx, vy, 0] is the linear velocity (movement)
+        # [0, 0, angular_vel] is the angular velocity (turning)
+        p.resetBaseVelocity(self.id, linearVelocity=[vx, vy, 0], angularVelocity=[0, 0, angular_vel])
 
     def navigate_to_goal(self):
         """Navigate towards the goal position using simple proportional control"""
@@ -210,13 +215,15 @@ class SubterraneanMapper:
                 basePosition=pos
             )
 
-            # Keep robots stationary with constraint
-            constraint = p.createConstraint(
-                robot_id, -1, -1, -1, p.JOINT_FIXED,
-                [0, 0, 0], [0, 0, 0], pos,
-                childFrameOrientation=p.getQuaternionFromEuler([0, 0, 0])
-            )
-            p.changeConstraint(constraint, maxForce=50)
+            # --- PHYSICS UPDATE: Enable sliding and prevent rolling ---
+            # 1. We removed the Fixed Constraint that was here before.
+            # 2. We use changeDynamics to prevent the sphere from rolling like a ball.
+            #    localInertiaDiagonal=[0, 0, 1] means it has "infinite" inertia on X/Y axes,
+            #    so it can only rotate around Z (Yaw), keeping it upright for Lidar.
+            p.changeDynamics(robot_id, -1, localInertiaDiagonal=[0, 0, 1])
+            
+            # Set friction properties to allow controlled sliding
+            p.changeDynamics(robot_id, -1, lateralFriction=0.5, spinningFriction=0.1, rollingFriction=0.0)
 
             robot = Robot(robot_id, pos, color)
             self.robots.append(robot)
