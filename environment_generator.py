@@ -469,23 +469,56 @@ class MazeEnvironment:
 
 
 def main():
-    """Main function demonstrating the maze environment."""
+    """Main function demonstrating the maze environment with user input."""
     print("=" * 60)
-    print("PyBullet Random Maze Environment for Multi-Robot Exploration")
+    print("PyBullet Random Maze Environment Generator")
     print("=" * 60)
+    
+    # --- Input Configuration (Adapted from run_sim.py) ---
+    
+    # 1. Maze Size
+    maze_size_input = input("\nEnter maze size (e.g., '10' for 10x10, default=10): ").strip()
+    maze_size = int(maze_size_input) if maze_size_input.isdigit() else 10
+
+    # 2. Cell Size
+    cell_size_input = input("Enter cell size in meters (default=2.0): ").strip()
+    try:
+        cell_size = float(cell_size_input)
+    except ValueError:
+        cell_size = 2.0
+
+    # 3. Random Seed
+    seed_input = input("Enter random seed (press Enter for random): ").strip()
+    env_seed = int(seed_input) if seed_input.isdigit() else None
+
+    # 4. Environment Type
+    print("\nEnvironment types:")
+    print("  1. Maze (complex maze with walls)")
+    print("  2. Blank box (empty room with single wall in middle)")
+    env_type_input = input("Choose environment type (1/2, default=1): ").strip()
+    env_type = 'blank_box' if env_type_input == '2' else 'maze'
+
+    # 5. GUI Toggle
+    gui_input = input("Show PyBullet 3D window? (y/n, default=y): ").strip().lower()
+    # Default to True for the generator visualization
+    use_gui = gui_input != 'n'
+
+    # --- Environment Creation ---
+
+    print(f"\nInitializing {maze_size}x{maze_size} {env_type}...")
     
     # Create maze environment
     env = MazeEnvironment(
-        maze_size=(10, 10),  # 10x10 cell maze
-        cell_size=2.0,       # 2m per cell
-        wall_height=2.5,     # 2.5m walls
-        gui=True,
-        seed=None            # Random maze each time
+        maze_size=(maze_size, maze_size),
+        cell_size=cell_size,
+        wall_height=2.5,
+        gui=use_gui,
+        seed=env_seed
     )
     
-    # Generate and build the maze
-    print("\nGenerating maze...")
-    env.generate_maze()
+    # Generate and build the maze based on user choice
+    print("\nGenerating layout...")
+    env.generate_maze(env_type=env_type)
     
     # Print ASCII representation
     print("\nMaze layout (ASCII):")
@@ -503,7 +536,7 @@ def main():
     # Add exploration targets
     print("\nAdding exploration markers...")
     markers = env.add_exploration_markers(num_markers=5)
-    print(f"Placed {len(markers)} markers at: {markers}")
+    print(f"Placed {len(markers)} markers")
     
     # Get spawn position info
     spawn_pos = env.get_spawn_position()
@@ -520,7 +553,6 @@ def main():
         print("\nSimulation stopped by user.")
     finally:
         env.close()
-
 
 if __name__ == "__main__":
     main()
