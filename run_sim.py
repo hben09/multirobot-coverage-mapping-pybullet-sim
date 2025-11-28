@@ -109,8 +109,9 @@ class Robot:
         angle_diff = desired_angle - yaw
         angle_diff = np.arctan2(np.sin(angle_diff), np.cos(angle_diff))
 
-        linear_vel = min(1.5, distance * 0.5)
-        angular_vel = np.clip(angle_diff * 2.0, -1.0, 1.0)
+        # --- UPDATE: Increased max speeds ---
+        linear_vel = min(8.0, distance * 2.0) # Increased max from 1.5 to 8.0
+        angular_vel = np.clip(angle_diff * 4.0, -4.0, 4.0) # Increased turn speed
 
         return linear_vel, angular_vel
 
@@ -559,9 +560,11 @@ class SubterraneanMapper:
 
             # Turn to face goal first, then move forward
             if abs(angle_diff) > 0.1:  # Still need to turn
-                robot.move(0.0, 1.0 if angle_diff > 0 else -1.0)  # Just turn
+                # --- UPDATE: Increased turn speed from 1.0 to 4.0 ---
+                robot.move(0.0, 4.0 if angle_diff > 0 else -4.0)  
             else:  # Facing the goal, move forward
-                robot.move(1.0, 0.0)
+                # --- UPDATE: Increased move speed from 1.0 to 8.0 ---
+                robot.move(8.0, 0.0)
             return
 
         # Otherwise, stationary
