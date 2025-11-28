@@ -1,11 +1,20 @@
+"""
+Multi-robot coverage mapping simulation for subterranean maze environments
+Uses the MazeEnvironment class from environment_generator to create procedurally generated mazes
+"""
+
 import pybullet as p
 import pybullet_data
 import numpy as np
 import time
-import matplotlib
 import matplotlib.pyplot as plt
-from collections import defaultdict
 import os
+from environment_generator import MazeEnvironment
+
+# Import the Robot class and MultiRobotMapper from the original file
+import sys
+sys.path.append(os.path.dirname(__file__))
+
 
 class Robot:
     def __init__(self, robot_id, position, color):
@@ -14,58 +23,50 @@ class Robot:
         self.color = color
         self.lidar_data = []
         self.trajectory = []
-        self.goal = None  # Goal position for manual control (x, y)
-        self.manual_control = False  # Whether this robot is under manual control
+        self.goal = None
+        self.manual_control = False
 
     def get_lidar_scan(self, num_rays=360, max_range=10):
         """Simulate lidar by casting rays in 360 degrees"""
         pos, orn = p.getBasePositionAndOrientation(self.id)
         euler = p.getEulerFromQuaternion(orn)
         yaw = euler[2]
-        
+
         ray_from = []
         ray_to = []
-        
+
         for i in range(num_rays):
-            angle = yaw + (2 * np.pi * i / num_rays)
-            ray_end = [
+            angle = yaw + (2.0 * np.pi * i / num_rays)
+            ray_from.append(pos)
+            ray_to.append([
                 pos[0] + max_range * np.cos(angle),
                 pos[1] + max_range * np.sin(angle),
                 pos[2]
-            ]
-            ray_from.append(pos)
-            ray_to.append(ray_end)
-        
-        # Batch ray test for efficiency
+            ])
+
         results = p.rayTestBatch(ray_from, ray_to)
-        
-        # Store lidar points in world coordinates
+
         scan_points = []
         for i, result in enumerate(results):
             hit_fraction = result[2]
-            if hit_fraction < 1.0:  # Ray hit something
-                angle = yaw + (2 * np.pi * i / num_rays)
-                distance = hit_fraction * max_range
-                hit_x = pos[0] + distance * np.cos(angle)
-                hit_y = pos[1] + distance * np.sin(angle)
-                scan_points.append((hit_x, hit_y))
-        
+            if hit_fraction < 1.0:
+                hit_position = result[3]
+                scan_points.append((hit_position[0], hit_position[1]))
+
         self.lidar_data.extend(scan_points)
         self.trajectory.append((pos[0], pos[1]))
         return scan_points
-    
+
     def move(self, linear_vel, angular_vel):
         """Move robot with linear and angular velocity"""
         pos, orn = p.getBasePositionAndOrientation(self.id)
         euler = p.getEulerFromQuaternion(orn)
         yaw = euler[2]
 
-        # Calculate new position
         new_x = pos[0] + linear_vel * np.cos(yaw) * 0.1
         new_y = pos[1] + linear_vel * np.sin(yaw) * 0.1
         new_yaw = yaw + angular_vel * 0.1
 
-        # Update position and orientation
         new_orn = p.getQuaternionFromEuler([0, 0, new_yaw])
         p.resetBasePositionAndOrientation(self.id, [new_x, new_y, 0.25], new_orn)
 
@@ -78,69 +79,72 @@ class Robot:
         euler = p.getEulerFromQuaternion(orn)
         yaw = euler[2]
 
-        # Calculate vector to goal
         dx = self.goal[0] - pos[0]
         dy = self.goal[1] - pos[1]
         distance = np.sqrt(dx**2 + dy**2)
 
-        # If close enough to goal, mark as reached
         if distance < 0.5:
             self.goal = None
             return 0.0, 0.0
 
-        # Calculate desired angle to goal
         desired_angle = np.arctan2(dy, dx)
-
-        # Calculate angle difference
         angle_diff = desired_angle - yaw
-        # Normalize to [-pi, pi]
         angle_diff = np.arctan2(np.sin(angle_diff), np.cos(angle_diff))
 
-        # Proportional control
-        linear_vel = min(1.5, distance * 0.5)  # Scale with distance, max speed 1.5
-        angular_vel = angle_diff * 2.0  # Proportional to angle error
-
-        # Limit angular velocity
-        angular_vel = np.clip(angular_vel, -1.0, 1.0)
+        linear_vel = min(1.5, distance * 0.5)
+        angular_vel = np.clip(angle_diff * 2.0, -1.0, 1.0)
 
         return linear_vel, angular_vel
 
-class MultiRobotMapper:
-    def __init__(self, use_gui=True):
-        # Connect to PyBullet with GUI or DIRECT mode
-        if use_gui:
-            self.physics_client = p.connect(p.GUI)
-        else:
-            self.physics_client = p.connect(p.DIRECT)
-        p.setAdditionalSearchPath(pybullet_data.getDataPath())
-        p.setGravity(0, 0, -10)
 
-        # Configure GUI camera if using GUI
-        if use_gui:
-            p.resetDebugVisualizerCamera(
-                cameraDistance=25,
-                cameraYaw=0,
-                cameraPitch=-45,
-                cameraTargetPosition=[0, 0, 0]
-            )
-        
-        # Create environment
-        self.setup_environment()
-        
+class SubterraneanMapper:
+    """Multi-robot mapper for subterranean maze environments"""
+
+    def __init__(self, use_gui=True, maze_size=(10, 10), cell_size=2.0, env_seed=None):
+        """
+        Initialize the mapper with a maze environment
+
+        Args:
+            use_gui: Whether to show PyBullet GUI
+            maze_size: Tuple (width, height) of maze in cells
+            cell_size: Size of each maze cell in meters
+            env_seed: Random seed for reproducible environments
+        """
+        # Create maze environment (which handles PyBullet connection internally)
+        self.env = MazeEnvironment(
+            maze_size=maze_size,
+            cell_size=cell_size,
+            wall_height=2.5,
+            wall_thickness=0.2,
+            gui=use_gui,
+            seed=env_seed
+        )
+
+        # Generate and build the maze
+        self.env.generate_maze()
+        self.env.build_walls()
+
+        # Store physics client reference
+        self.physics_client = self.env.physics_client
+
         # Create robots
         self.robots = []
         self.create_robots()
-        
-        # Mapping data - occupancy grid
-        self.grid_resolution = 0.5  # meters per cell
-        self.occupancy_grid = {}  # (grid_x, grid_y): 0=unknown, 1=free, 2=obstacle
+
+        # Mapping data
+        self.grid_resolution = 0.5
+        self.occupancy_grid = {}
         self.explored_cells = set()
         self.obstacle_cells = set()
 
-        # Define map boundaries based on environment
+        # Calculate environment bounds from maze
+        maze_world_width = self.env.maze_grid.shape[1] * self.env.cell_size / 2
+        maze_world_height = self.env.maze_grid.shape[0] * self.env.cell_size / 2
         self.map_bounds = {
-            'x_min': -10, 'x_max': 10,
-            'y_min': -10, 'y_max': 10
+            'x_min': 0,
+            'x_max': maze_world_width,
+            'y_min': 0,
+            'y_max': maze_world_height
         }
 
         # Coverage tracking
@@ -152,98 +156,44 @@ class MultiRobotMapper:
         # Real-time visualization
         self.realtime_fig = None
         self.realtime_axes = None
-        
-    def setup_environment(self):
-        """Create the environment with walls and obstacles"""
-        # Ground plane
-        p.loadURDF("plane.urdf")
-        
-        # Create walls (boundary)
-        wall_half_extents = [0.2, 5, 1]
-        wall_color = [0.5, 0.5, 0.5, 1]
-        
-        # Create collision and visual shapes for walls
-        wall_collision = p.createCollisionShape(p.GEOM_BOX, halfExtents=wall_half_extents)
-        wall_visual = p.createVisualShape(p.GEOM_BOX, halfExtents=wall_half_extents, 
-                                         rgbaColor=wall_color)
-        
-        # Four walls
-        walls_positions = [
-            [0, 10, 1],   # North wall
-            [0, -10, 1],  # South wall
-            [10, 0, 1],   # East wall
-            [-10, 0, 1]   # West wall
-        ]
-        
-        walls_orientations = [
-            p.getQuaternionFromEuler([0, 0, 0]),
-            p.getQuaternionFromEuler([0, 0, 0]),
-            p.getQuaternionFromEuler([0, 0, np.pi/2]),
-            p.getQuaternionFromEuler([0, 0, np.pi/2])
-        ]
-        
-        for pos, orn in zip(walls_positions, walls_orientations):
-            p.createMultiBody(baseMass=0, baseCollisionShapeIndex=wall_collision,
-                            baseVisualShapeIndex=wall_visual,
-                            basePosition=pos, baseOrientation=orn)
-        
-        # Add some obstacles
-        obstacle_collision = p.createCollisionShape(p.GEOM_BOX, halfExtents=[1, 1, 1])
-        obstacle_visual = p.createVisualShape(p.GEOM_BOX, halfExtents=[1, 1, 1],
-                                             rgbaColor=[0.8, 0.3, 0.3, 1])
-        
-        obstacles = [
-            [3, 3, 1],
-            [-4, 4, 1],
-            [5, -3, 1],
-            [-3, -5, 1],
-            [0, 0, 1]
-        ]
-        
-        for pos in obstacles:
-            p.createMultiBody(baseMass=0, baseCollisionShapeIndex=obstacle_collision,
-                            baseVisualShapeIndex=obstacle_visual,
-                            basePosition=pos)
-    
+
     def create_robots(self):
-        """Create three robots with different colors"""
-        robot_positions = [
-            [-7, -7, 0.25],
-            [7, -7, 0.25],
-            [0, 7, 0.25]
+        """Create robots at starting positions near the maze entrance"""
+        # Get spawn position from maze environment
+        spawn_pos = self.env.get_spawn_position()
+
+        # Position robots near the entrance
+        start_positions = [
+            [spawn_pos[0] - 1.0, spawn_pos[1], 0.25],   # Red robot
+            [spawn_pos[0], spawn_pos[1], 0.25],          # Green robot
+            [spawn_pos[0] + 1.0, spawn_pos[1], 0.25]     # Blue robot
         ]
-        
-        robot_colors = [
-            [1, 0, 0, 1],  # Red
-            [0, 1, 0, 1],  # Green
-            [0, 0, 1, 1]   # Blue
-        ]
-        
-        for i, (pos, color) in enumerate(zip(robot_positions, robot_colors)):
-            # Create robot as a cylinder
-            collision_shape = p.createCollisionShape(p.GEOM_CYLINDER, 
-                                                    radius=0.3, height=0.5)
-            visual_shape = p.createVisualShape(p.GEOM_CYLINDER,
-                                              radius=0.3, length=0.5,
-                                              rgbaColor=color)
-            
-            robot_id = p.createMultiBody(baseMass=1,
-                                        baseCollisionShapeIndex=collision_shape,
-                                        baseVisualShapeIndex=visual_shape,
-                                        basePosition=pos)
-            
-            # Add constraint to keep robot in 2D (lock z-axis and x,y rotations)
+
+        colors = [[1, 0, 0, 1], [0, 1, 0, 1], [0, 0, 1, 1]]  # Red, Green, Blue
+
+        for i, (pos, color) in enumerate(zip(start_positions, colors)):
+            # Create sphere robot
+            collision_shape = p.createCollisionShape(p.GEOM_SPHERE, radius=0.25)
+            visual_shape = p.createVisualShape(p.GEOM_SPHERE, radius=0.25, rgbaColor=color)
+
+            robot_id = p.createMultiBody(
+                baseMass=1.0,
+                baseCollisionShapeIndex=collision_shape,
+                baseVisualShapeIndex=visual_shape,
+                basePosition=pos
+            )
+
+            # Keep robots stationary with constraint
             constraint = p.createConstraint(
-                robot_id, -1, -1, -1, 
-                p.JOINT_FIXED, 
+                robot_id, -1, -1, -1, p.JOINT_FIXED,
                 [0, 0, 0], [0, 0, 0], pos,
                 childFrameOrientation=p.getQuaternionFromEuler([0, 0, 0])
             )
             p.changeConstraint(constraint, maxForce=50)
-            
+
             robot = Robot(robot_id, pos, color)
             self.robots.append(robot)
-    
+
     def world_to_grid(self, x, y):
         """Convert world coordinates to grid coordinates"""
         grid_x = int((x - self.map_bounds['x_min']) / self.grid_resolution)
@@ -261,24 +211,19 @@ class MultiRobotMapper:
         if not robot.lidar_data:
             return
 
-        # Get robot position
         pos, _ = p.getBasePositionAndOrientation(robot.id)
         robot_grid = self.world_to_grid(pos[0], pos[1])
 
-        # Mark robot position as free
         self.occupancy_grid[robot_grid] = 1
         self.explored_cells.add(robot_grid)
 
-        # Process recent lidar hits (last scan)
         recent_scans = robot.lidar_data[-180:] if len(robot.lidar_data) > 180 else robot.lidar_data
 
         for hit_x, hit_y in recent_scans:
-            # Mark obstacle location
             obstacle_grid = self.world_to_grid(hit_x, hit_y)
             self.occupancy_grid[obstacle_grid] = 2
             self.obstacle_cells.add(obstacle_grid)
 
-            # Ray trace from robot to obstacle to mark free cells
             self.bresenham_line(robot_grid[0], robot_grid[1],
                                obstacle_grid[0], obstacle_grid[1])
 
@@ -292,7 +237,6 @@ class MultiRobotMapper:
 
         x, y = x0, y0
         while True:
-            # Mark cell as free (but don't overwrite obstacles)
             cell = (x, y)
             if cell not in self.obstacle_cells:
                 self.occupancy_grid[cell] = 1
@@ -314,10 +258,9 @@ class MultiRobotMapper:
         frontiers = set()
 
         for cell in self.explored_cells:
-            if self.occupancy_grid.get(cell) != 1:  # Only check free cells
+            if self.occupancy_grid.get(cell) != 1:
                 continue
 
-            # Check 8-connected neighbors
             x, y = cell
             for dx in [-1, 0, 1]:
                 for dy in [-1, 0, 1]:
@@ -326,13 +269,11 @@ class MultiRobotMapper:
 
                     neighbor = (x + dx, y + dy)
 
-                    # Check if neighbor is within bounds
                     world_x, world_y = self.grid_to_world(neighbor[0], neighbor[1])
                     if not (self.map_bounds['x_min'] <= world_x <= self.map_bounds['x_max'] and
                            self.map_bounds['y_min'] <= world_y <= self.map_bounds['y_max']):
                         continue
 
-                    # If neighbor is unknown, current cell is a frontier
                     if neighbor not in self.occupancy_grid:
                         frontiers.add(cell)
                         break
@@ -350,7 +291,7 @@ class MultiRobotMapper:
 
     def setup_realtime_visualization(self):
         """Setup interactive real-time visualization window"""
-        plt.ion()  # Turn on interactive mode
+        plt.ion()
         self.realtime_fig = plt.figure(figsize=(15, 10))
         gs = self.realtime_fig.add_gridspec(2, 2, hspace=0.3, wspace=0.3)
 
@@ -360,26 +301,22 @@ class MultiRobotMapper:
             'coverage': self.realtime_fig.add_subplot(gs[1, :])
         }
 
-        self.realtime_fig.suptitle('Real-Time Multi-Robot Coverage Mapping\n(Click on grid map to control RED robot)',
-                                   fontsize=14, fontweight='bold')
+        title = 'Subterranean Maze Mapping\n(Click on grid map to control RED robot)'
 
-        # Add click event handler
+        self.realtime_fig.suptitle(title, fontsize=14, fontweight='bold')
+
         self.realtime_fig.canvas.mpl_connect('button_press_event', self.on_map_click)
 
         plt.show(block=False)
 
     def on_map_click(self, event):
         """Handle mouse clicks on the map to set goals for Robot 0 (Red)"""
-        # Only respond to clicks on the grid axes
         if event.inaxes == self.realtime_axes['grid']:
-            # Get click coordinates
             x, y = event.xdata, event.ydata
 
-            # Check if click is within map bounds
             if (self.map_bounds['x_min'] <= x <= self.map_bounds['x_max'] and
                 self.map_bounds['y_min'] <= y <= self.map_bounds['y_max']):
 
-                # Set goal for Robot 0 (Red robot)
                 self.robots[0].goal = (x, y)
                 self.robots[0].manual_control = True
 
@@ -390,7 +327,6 @@ class MultiRobotMapper:
         if self.realtime_fig is None:
             return
 
-        # Clear all axes
         for ax in self.realtime_axes.values():
             ax.clear()
 
@@ -398,32 +334,30 @@ class MultiRobotMapper:
         ax_grid = self.realtime_axes['grid']
         grid_x = int((self.map_bounds['x_max'] - self.map_bounds['x_min']) / self.grid_resolution)
         grid_y = int((self.map_bounds['y_max'] - self.map_bounds['y_min']) / self.grid_resolution)
-        grid_image = np.ones((grid_y, grid_x, 3)) * 0.7  # Gray for unexplored
+        grid_image = np.ones((grid_y, grid_x, 3)) * 0.7
 
-        # Fill in explored and obstacle cells
         for cell, value in self.occupancy_grid.items():
             gx, gy = cell
             if 0 <= gx < grid_x and 0 <= gy < grid_y:
-                if value == 1:  # Free space
-                    grid_image[gy, gx] = [1, 1, 1]  # White
-                elif value == 2:  # Obstacle
-                    grid_image[gy, gx] = [0, 0, 0]  # Black
+                if value == 1:
+                    grid_image[gy, gx] = [1, 1, 1]
+                elif value == 2:
+                    grid_image[gy, gx] = [0, 0, 0]
 
         extent = [self.map_bounds['x_min'], self.map_bounds['x_max'],
                  self.map_bounds['y_min'], self.map_bounds['y_max']]
         ax_grid.imshow(grid_image, origin='lower', extent=extent, interpolation='nearest')
 
-        # Plot robot trajectories and current positions
+        # Plot robot trajectories and positions
         for robot, color in zip(self.robots, ['red', 'green', 'blue']):
             if robot.trajectory:
                 traj = np.array(robot.trajectory)
                 ax_grid.plot(traj[:, 0], traj[:, 1], c=color, linewidth=1.5, alpha=0.6)
 
-            # Current position
             pos, _ = p.getBasePositionAndOrientation(robot.id)
 
             # Draw lidar range circle
-            lidar_range = 15  # meters
+            lidar_range = 15
             circle = plt.Circle((pos[0], pos[1]), lidar_range, color=color,
                                fill=False, linewidth=1.5, alpha=0.15, zorder=3)
             ax_grid.add_patch(circle)
@@ -431,24 +365,21 @@ class MultiRobotMapper:
             ax_grid.scatter(pos[0], pos[1], c=color, s=100, marker='^',
                           edgecolors='black', linewidths=1.5, zorder=5)
 
-            # Draw goal position if set
             if robot.goal is not None:
                 ax_grid.scatter(robot.goal[0], robot.goal[1], c=color, s=200,
-                              marker='X', edgecolors='white', linewidths=2, zorder=6,
-                              label=f'Goal')
-                # Draw line from robot to goal
+                              marker='X', edgecolors='white', linewidths=2, zorder=6)
                 ax_grid.plot([pos[0], robot.goal[0]], [pos[1], robot.goal[1]],
                            c=color, linestyle='--', linewidth=2, alpha=0.7, zorder=4)
 
-        ax_grid.set_xlim(-12, 12)
-        ax_grid.set_ylim(-12, 12)
+        bounds_margin = 5
+        ax_grid.set_xlim(self.map_bounds['x_min'] - bounds_margin, self.map_bounds['x_max'] + bounds_margin)
+        ax_grid.set_ylim(self.map_bounds['y_min'] - bounds_margin, self.map_bounds['y_max'] + bounds_margin)
         ax_grid.set_aspect('equal')
         ax_grid.grid(True, alpha=0.3)
         ax_grid.set_title('Occupancy Grid\n(White=Free, Black=Obstacle, Gray=Unexplored)')
         ax_grid.set_xlabel('X (meters)')
         ax_grid.set_ylabel('Y (meters)')
 
-        # Add coverage text
         coverage = self.calculate_coverage()
         ax_grid.text(0.02, 0.98, f'Coverage: {coverage:.1f}%\nCells: {len(self.explored_cells)}/{self.total_cells}\nStep: {step}',
                     transform=ax_grid.transAxes, verticalalignment='top',
@@ -459,7 +390,6 @@ class MultiRobotMapper:
         ax_frontier = self.realtime_axes['frontier']
         frontiers = self.detect_frontiers()
 
-        # Plot explored area
         explored_points = []
         for cell in self.explored_cells:
             if self.occupancy_grid.get(cell) == 1:
@@ -471,7 +401,6 @@ class MultiRobotMapper:
             ax_frontier.scatter(explored_array[:, 0], explored_array[:, 1],
                               c='lightblue', s=3, alpha=0.4, marker='s')
 
-        # Plot obstacles
         obstacle_points = []
         for cell in self.obstacle_cells:
             x, y = self.grid_to_world(cell[0], cell[1])
@@ -482,7 +411,6 @@ class MultiRobotMapper:
             ax_frontier.scatter(obstacle_array[:, 0], obstacle_array[:, 1],
                               c='black', s=3, marker='s')
 
-        # Plot frontiers
         if frontiers:
             frontier_points = [self.grid_to_world(cell[0], cell[1]) for cell in frontiers]
             frontier_array = np.array(frontier_points)
@@ -490,12 +418,11 @@ class MultiRobotMapper:
                               c='yellow', s=25, marker='o', edgecolors='orange',
                               linewidths=1.5, label='Frontiers', zorder=5)
 
-        # Plot robot current positions
         for robot, color in zip(self.robots, ['red', 'green', 'blue']):
             pos, _ = p.getBasePositionAndOrientation(robot.id)
 
             # Draw lidar range circle
-            lidar_range = 15  # meters
+            lidar_range = 15
             circle = plt.Circle((pos[0], pos[1]), lidar_range, color=color,
                                fill=False, linewidth=1.5, alpha=0.15, zorder=3)
             ax_frontier.add_patch(circle)
@@ -503,8 +430,8 @@ class MultiRobotMapper:
             ax_frontier.scatter(pos[0], pos[1], c=color, s=150, marker='^',
                               edgecolors='black', linewidths=2, zorder=6)
 
-        ax_frontier.set_xlim(-12, 12)
-        ax_frontier.set_ylim(-12, 12)
+        ax_frontier.set_xlim(self.map_bounds['x_min'] - bounds_margin, self.map_bounds['x_max'] + bounds_margin)
+        ax_frontier.set_ylim(self.map_bounds['y_min'] - bounds_margin, self.map_bounds['y_max'] + bounds_margin)
         ax_frontier.set_aspect('equal')
         ax_frontier.grid(True, alpha=0.3)
         ax_frontier.set_title(f'Frontier Detection\n({len(frontiers)} frontiers)')
@@ -526,7 +453,6 @@ class MultiRobotMapper:
         ax_coverage.set_ylim(0, 100)
         ax_coverage.set_xlim(0, max(2000, step))
 
-        # Force update
         self.realtime_fig.canvas.draw()
         self.realtime_fig.canvas.flush_events()
         plt.pause(0.001)
@@ -535,297 +461,109 @@ class MultiRobotMapper:
         """Simple movement pattern for exploration"""
         robot_idx = self.robots.index(robot)
 
-        # Only Robot 0 (Red) can move - others stay stationary
         if robot_idx != 0:
             robot.move(0.0, 0.0)
             return
 
-        # Check if robot 0 has a manual goal
         if robot.manual_control and robot.goal is not None:
-            # Navigate to the goal
             linear, angular = robot.navigate_to_goal()
             robot.move(linear, angular)
             return
 
-        # If robot 0 finished manual goal or hasn't been given one yet
-        # Stay in place waiting for next goal
         robot.move(0.0, 0.0)
-    
-    def run_simulation(self, steps=2000, scan_interval=10, use_gui=True, realtime_viz=True, viz_update_interval=50):
-        """Run the simulation
 
-        Args:
-            steps: Number of simulation steps
-            scan_interval: How often to perform lidar scans
-            use_gui: Whether to show PyBullet GUI
-            realtime_viz: Whether to show real-time map visualization
-            viz_update_interval: How often to update the real-time visualization (in steps)
-        """
-        print("Starting multi-robot mapping simulation...")
-        print("Red, Green, and Blue robots are exploring the environment")
+    def run_simulation(self, steps=5000, scan_interval=10, use_gui=True, realtime_viz=True, viz_update_interval=50):
+        """Run the simulation"""
+        print("Starting subterranean maze mapping simulation...")
         print(f"Running for {steps} steps...")
 
-        # Setup real-time visualization if enabled
         if realtime_viz:
             print("Setting up real-time visualization...")
             self.setup_realtime_visualization()
 
         for step in range(steps):
-            # Move each robot
             for robot in self.robots:
                 self.simple_exploration_move(robot, step)
 
-            # Perform lidar scans periodically
             if step % scan_interval == 0:
                 for robot in self.robots:
                     robot.get_lidar_scan(num_rays=180, max_range=15)
-                    # Update occupancy grid with new scan data
                     self.update_occupancy_grid(robot)
 
-                # Track coverage over time
                 coverage = self.calculate_coverage()
                 self.coverage_history.append((step, coverage))
 
-            # Update real-time visualization
             if realtime_viz and step % viz_update_interval == 0:
                 self.update_realtime_visualization(step)
 
-            # Step simulation
             p.stepSimulation()
 
-            # Add delay for GUI visualization
             if use_gui:
-                time.sleep(1./240.)  # 240 Hz simulation rate
+                time.sleep(1./240.)
 
-            # Print progress with coverage
             if step % 200 == 0:
                 coverage = self.calculate_coverage()
                 num_frontiers = len(self.detect_frontiers())
                 print(f"Progress: {step}/{steps} steps | Coverage: {coverage:.1f}% | Frontiers: {num_frontiers}")
 
-        # Final update of real-time visualization
         if realtime_viz:
             self.update_realtime_visualization(steps)
-            print("\nReal-time visualization complete. Close the plot window to continue...")
+            print("\nReal-time visualization complete.")
 
         print("\nSimulation complete!")
-        print(f"Robot 1 (Red) scanned {len(self.robots[0].lidar_data)} points")
-        print(f"Robot 2 (Green) scanned {len(self.robots[1].lidar_data)} points")
-        print(f"Robot 3 (Blue) scanned {len(self.robots[2].lidar_data)} points")
         final_coverage = self.calculate_coverage()
-        print(f"\nFinal Coverage: {final_coverage:.2f}%")
+        print(f"Final Coverage: {final_coverage:.2f}%")
         print(f"Explored Cells: {len(self.explored_cells)}/{self.total_cells}")
-    
-    def visualize_map(self):
-        """Visualize the mapped environment with occupancy grid and frontiers"""
-        # Create output directory if it doesn't exist
-        output_dir = 'outputs'
-        os.makedirs(output_dir, exist_ok=True)
 
-        # Turn off interactive mode for saving
-        plt.ioff()
-
-        fig = plt.figure(figsize=(18, 12))
-        gs = fig.add_gridspec(2, 3, hspace=0.3, wspace=0.3)
-
-        colors = ['red', 'green', 'blue']
-        robot_names = ['Robot 1 (Red)', 'Robot 2 (Green)', 'Robot 3 (Blue)']
-
-        # 1. Occupancy Grid Map
-        ax_grid = fig.add_subplot(gs[0, 0])
-        self._plot_occupancy_grid(ax_grid)
-
-        # 2. Frontier Map
-        ax_frontier = fig.add_subplot(gs[0, 1])
-        self._plot_frontier_map(ax_frontier)
-
-        # 3. Coverage Over Time
-        ax_coverage = fig.add_subplot(gs[0, 2])
-        self._plot_coverage_history(ax_coverage)
-
-        # 4-6. Individual robot trajectories with lidar
-        for idx, (robot, color, name) in enumerate(zip(self.robots, colors, robot_names)):
-            ax = fig.add_subplot(gs[1, idx])
-
-            if robot.lidar_data:
-                points = np.array(robot.lidar_data)
-                ax.scatter(points[:, 0], points[:, 1], c=color, s=1, alpha=0.2)
-
-            if robot.trajectory:
-                traj = np.array(robot.trajectory)
-                ax.plot(traj[:, 0], traj[:, 1], c=color, linewidth=2, label='Trajectory')
-                # Mark start and end
-                ax.scatter(traj[0, 0], traj[0, 1], c='black', s=100, marker='o',
-                          label='Start', zorder=5)
-                ax.scatter(traj[-1, 0], traj[-1, 1], c='gold', s=100, marker='*',
-                          label='End', zorder=5)
-
-            ax.set_xlim(-12, 12)
-            ax.set_ylim(-12, 12)
-            ax.set_aspect('equal')
-            ax.grid(True, alpha=0.3)
-            ax.set_title(f'{name} Trajectory')
-            ax.set_xlabel('X (meters)')
-            ax.set_ylabel('Y (meters)')
-            ax.legend(fontsize=8)
-
-        # Add overall title with coverage info
-        final_coverage = self.calculate_coverage()
-        fig.suptitle(f'Multi-Robot Coverage Mapping - Final Coverage: {final_coverage:.2f}%',
-                    fontsize=16, fontweight='bold')
-
-        output_path = os.path.join(output_dir, 'multi_robot_map.png')
-        plt.savefig(output_path, dpi=150, bbox_inches='tight')
-        print(f"Map visualization saved to {output_path}!")
-        plt.close()
-
-    def _plot_occupancy_grid(self, ax):
-        """Plot the occupancy grid"""
-        # Create grid image
-        grid_x = int((self.map_bounds['x_max'] - self.map_bounds['x_min']) / self.grid_resolution)
-        grid_y = int((self.map_bounds['y_max'] - self.map_bounds['y_min']) / self.grid_resolution)
-        grid_image = np.ones((grid_y, grid_x, 3)) * 0.7  # Gray for unexplored
-
-        # Fill in explored and obstacle cells
-        for cell, value in self.occupancy_grid.items():
-            gx, gy = cell
-            if 0 <= gx < grid_x and 0 <= gy < grid_y:
-                if value == 1:  # Free space
-                    grid_image[gy, gx] = [1, 1, 1]  # White
-                elif value == 2:  # Obstacle
-                    grid_image[gy, gx] = [0, 0, 0]  # Black
-
-        # Plot robot trajectories on grid
-        for robot, color in zip(self.robots, ['red', 'green', 'blue']):
-            if robot.trajectory:
-                traj = np.array(robot.trajectory)
-                ax.plot(traj[:, 0], traj[:, 1], c=color, linewidth=2, alpha=0.7)
-
-        extent = [self.map_bounds['x_min'], self.map_bounds['x_max'],
-                 self.map_bounds['y_min'], self.map_bounds['y_max']]
-        ax.imshow(grid_image, origin='lower', extent=extent, interpolation='nearest')
-
-        ax.set_xlim(-12, 12)
-        ax.set_ylim(-12, 12)
-        ax.set_aspect('equal')
-        ax.grid(True, alpha=0.3)
-        ax.set_title('Occupancy Grid Map\n(White=Free, Black=Obstacle, Gray=Unexplored)')
-        ax.set_xlabel('X (meters)')
-        ax.set_ylabel('Y (meters)')
-
-        # Add legend for explored percentage
-        explored_pct = self.calculate_coverage()
-        ax.text(0.02, 0.98, f'Explored: {explored_pct:.1f}%\nCells: {len(self.explored_cells)}/{self.total_cells}',
-               transform=ax.transAxes, verticalalignment='top',
-               bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8),
-               fontsize=9)
-
-    def _plot_frontier_map(self, ax):
-        """Plot frontiers (boundary between explored and unexplored)"""
-        # Get frontiers
-        frontiers = self.detect_frontiers()
-
-        # Plot explored area
-        for cell in self.explored_cells:
-            if self.occupancy_grid.get(cell) == 1:  # Free space
-                x, y = self.grid_to_world(cell[0], cell[1])
-                ax.plot(x, y, 's', color='lightblue', markersize=2, alpha=0.5)
-
-        # Plot obstacles
-        for cell in self.obstacle_cells:
-            x, y = self.grid_to_world(cell[0], cell[1])
-            ax.plot(x, y, 's', color='black', markersize=2)
-
-        # Plot frontiers
-        if frontiers:
-            frontier_points = [self.grid_to_world(cell[0], cell[1]) for cell in frontiers]
-            frontier_array = np.array(frontier_points)
-            ax.scatter(frontier_array[:, 0], frontier_array[:, 1],
-                      c='yellow', s=20, marker='o', edgecolors='orange',
-                      linewidths=1, label='Frontiers', zorder=5)
-
-        # Plot robot current positions
-        for robot, color in zip(self.robots, ['red', 'green', 'blue']):
-            pos, _ = p.getBasePositionAndOrientation(robot.id)
-            ax.scatter(pos[0], pos[1], c=color, s=150, marker='^',
-                      edgecolors='black', linewidths=2, zorder=6)
-
-        ax.set_xlim(-12, 12)
-        ax.set_ylim(-12, 12)
-        ax.set_aspect('equal')
-        ax.grid(True, alpha=0.3)
-        ax.set_title(f'Frontier Map\n(Yellow=Frontiers, Triangles=Robots)')
-        ax.set_xlabel('X (meters)')
-        ax.set_ylabel('Y (meters)')
-
-        # Add stats
-        num_frontiers = len(frontiers)
-        ax.text(0.02, 0.98, f'Frontiers: {num_frontiers}\nExplored: {len(self.explored_cells)}\nObstacles: {len(self.obstacle_cells)}',
-               transform=ax.transAxes, verticalalignment='top',
-               bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8),
-               fontsize=9)
-
-        if frontiers:
-            ax.legend(loc='upper right', fontsize=8)
-
-    def _plot_coverage_history(self, ax):
-        """Plot coverage percentage over time"""
-        if self.coverage_history:
-            steps, coverage = zip(*self.coverage_history)
-            ax.plot(steps, coverage, linewidth=2, color='blue', marker='o',
-                   markersize=3, markevery=10)
-            ax.fill_between(steps, coverage, alpha=0.3, color='blue')
-
-            ax.set_xlabel('Simulation Step')
-            ax.set_ylabel('Coverage (%)')
-            ax.set_title('Coverage Progress Over Time')
-            ax.grid(True, alpha=0.3)
-            ax.set_ylim(0, max(100, max(coverage) * 1.1))
-
-            # Add final coverage annotation
-            final_coverage = coverage[-1]
-            ax.axhline(y=final_coverage, color='red', linestyle='--', alpha=0.5)
-            ax.text(0.98, 0.02, f'Final: {final_coverage:.2f}%',
-                   transform=ax.transAxes, horizontalalignment='right',
-                   bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.8),
-                   fontsize=10, fontweight='bold')
-        else:
-            ax.text(0.5, 0.5, 'No coverage data',
-                   transform=ax.transAxes, horizontalalignment='center')
-            ax.set_title('Coverage Progress Over Time')
-    
     def cleanup(self):
         """Disconnect from PyBullet"""
-        p.disconnect()
+        self.env.close()
+
 
 def main():
-    # Create mapper with GUI enabled
-    mapper = MultiRobotMapper(use_gui=True)
+    """Main function with maze configuration"""
+    print("=" * 60)
+    print("Multi-Robot Subterranean Maze Coverage Mapping")
+    print("=" * 60)
 
-    # Run simulation with real-time visualization
+    # Maze configuration
+    maze_size_input = input("\nEnter maze size (e.g., '10' for 10x10, default=10): ").strip()
+    maze_size = int(maze_size_input) if maze_size_input.isdigit() else 10
+
+    cell_size_input = input("Enter cell size in meters (default=2.0): ").strip()
+    try:
+        cell_size = float(cell_size_input)
+    except:
+        cell_size = 2.0
+
+    seed_input = input("Enter random seed (press Enter for random): ").strip()
+    env_seed = int(seed_input) if seed_input.isdigit() else None
+
+    print(f"\nCreating {maze_size}x{maze_size} maze with {cell_size}m cells...")
+    mapper = SubterraneanMapper(
+        use_gui=True,
+        maze_size=(maze_size, maze_size),
+        cell_size=cell_size,
+        env_seed=env_seed
+    )
+
     try:
         mapper.run_simulation(
-            steps=10000,
+            steps=8000,
             scan_interval=10,
             use_gui=True,
-            realtime_viz=True,  # Enable real-time map visualization
-            viz_update_interval=50  # Update map every 50 steps
+            realtime_viz=True,
+            viz_update_interval=50
         )
-
-        # Generate final static map visualization
-        print("\nGenerating final map visualization...")
-
-        # Visualize results
-        mapper.visualize_map()
 
     except KeyboardInterrupt:
         print("\nSimulation interrupted by user")
     finally:
-        # Close real-time visualization if open
         if mapper.realtime_fig is not None:
             plt.close(mapper.realtime_fig)
         mapper.cleanup()
         print("PyBullet disconnected")
+
 
 if __name__ == "__main__":
     main()
