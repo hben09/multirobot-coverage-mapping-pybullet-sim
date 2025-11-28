@@ -166,10 +166,7 @@ class MazeEnvironment:
         
         # Add ceiling to create subterranean feel (optional)
         self._create_ceiling()
-        
-        # Add floor texture/color for the maze interior
-        self._create_floor()
-        
+
         return self.wall_ids
     
     def _create_wall_block(self, grid_x, grid_y, color):
@@ -209,51 +206,26 @@ class MazeEnvironment:
         """Create a semi-transparent ceiling for the subterranean environment."""
         grid_width = self.maze_grid.shape[1]
         grid_height = self.maze_grid.shape[0]
-        
+
         ceiling_width = grid_width * self.cell_size / 2
         ceiling_height = grid_height * self.cell_size / 2
-        
+
         # Semi-transparent dark ceiling
         ceiling_color = [0.2, 0.2, 0.25, 0.3]
-        
+
         visual_shape = p.createVisualShape(
             p.GEOM_BOX,
             halfExtents=[ceiling_width / 2, ceiling_height / 2, 0.05],
             rgbaColor=ceiling_color
         )
-        
+
         ceiling_id = p.createMultiBody(
             baseMass=0,
             baseVisualShapeIndex=visual_shape,
             basePosition=[ceiling_width / 2, ceiling_height / 2, self.wall_height + 0.05]
         )
-        
+
         self.wall_ids.append(ceiling_id)
-    
-    def _create_floor(self):
-        """Create a colored floor for the maze interior."""
-        grid_width = self.maze_grid.shape[1]
-        grid_height = self.maze_grid.shape[0]
-        
-        floor_width = grid_width * self.cell_size / 2
-        floor_height = grid_height * self.cell_size / 2
-        
-        # Dark floor for subterranean feel
-        floor_color = [0.25, 0.22, 0.2, 1.0]
-        
-        visual_shape = p.createVisualShape(
-            p.GEOM_BOX,
-            halfExtents=[floor_width / 2, floor_height / 2, 0.01],
-            rgbaColor=floor_color
-        )
-        
-        floor_id = p.createMultiBody(
-            baseMass=0,
-            baseVisualShapeIndex=visual_shape,
-            basePosition=[floor_width / 2, floor_height / 2, 0.01]
-        )
-        
-        self.wall_ids.append(floor_id)
     
     def get_spawn_position(self):
         """

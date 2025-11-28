@@ -465,11 +465,37 @@ class SubterraneanMapper:
             robot.move(0.0, 0.0)
             return
 
+        # If manual control is enabled and goal exists, move straight toward it
         if robot.manual_control and robot.goal is not None:
-            linear, angular = robot.navigate_to_goal()
-            robot.move(linear, angular)
+            pos, orn = p.getBasePositionAndOrientation(robot.id)
+            euler = p.getEulerFromQuaternion(orn)
+            yaw = euler[2]
+
+            # Calculate distance and angle to goal
+            dx = robot.goal[0] - pos[0]
+            dy = robot.goal[1] - pos[1]
+            distance = np.sqrt(dx**2 + dy**2)
+
+            # Stop if reached goal
+            if distance < 0.5:
+                robot.goal = None
+                robot.manual_control = False
+                robot.move(0.0, 0.0)
+                return
+
+            # Calculate desired angle to goal
+            desired_angle = np.arctan2(dy, dx)
+            angle_diff = desired_angle - yaw
+            angle_diff = np.arctan2(np.sin(angle_diff), np.cos(angle_diff))
+
+            # Turn to face goal first, then move forward
+            if abs(angle_diff) > 0.1:  # Still need to turn
+                robot.move(0.0, 1.0 if angle_diff > 0 else -1.0)  # Just turn
+            else:  # Facing the goal, move forward
+                robot.move(1.0, 0.0)
             return
 
+        # Otherwise, stationary
         robot.move(0.0, 0.0)
 
     def run_simulation(self, steps=5000, scan_interval=10, use_gui=True, realtime_viz=True, viz_update_interval=50):
