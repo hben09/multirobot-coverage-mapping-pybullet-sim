@@ -49,6 +49,7 @@ class MazeEnvironment:
         self.maze_grid = None
         self.wall_ids = []
         self.robot_ids = []
+        self.entrance_cell = None
         self.entrance_position = None
         
         self._init_pybullet()
@@ -83,9 +84,9 @@ class MazeEnvironment:
     def generate_maze(self, env_type='maze'):
         """
         Generate an environment based on the specified type.
-
+        
         Args:
-            env_type: 'maze' for maze generation, 'blank_box' for empty room with single wall
+            env_type: 'maze', 'blank_box', 'cave', 'tunnel', 'rooms'
 
         The maze is represented as a 2D grid where:
         - 0 = passage (empty space)
@@ -97,26 +98,40 @@ class MazeEnvironment:
         grid_height = self.maze_height * 2 + 1
         self.maze_grid = np.ones((grid_height, grid_width), dtype=int)
 
+        # Generate based on type
         if env_type == 'blank_box':
-            # Create empty box with perimeter walls and single wall in middle
             self._generate_blank_box()
+        elif env_type == 'cave':
+            self._generate_cave()
+        elif env_type == 'tunnel':
+            self._generate_tunnel()
+        elif env_type == 'rooms':
+            self._generate_rooms()
         else:
-            # Recursive backtracking maze generation
-            self._carve_passages(1, 1)
-
-            # Create entrance on the outside (bottom wall)
-            entrance_x = random.choice(range(1, grid_width - 1, 2))
-            self.maze_grid[0, entrance_x] = 0
-            self.entrance_cell = (entrance_x, 0)
-
-            # Optionally create an exit on the opposite side
-            exit_x = random.choice(range(1, grid_width - 1, 2))
-            self.maze_grid[grid_height - 1, exit_x] = 0
-
-            # Ensure maze is fully connected and has interesting paths
-            self._add_loops(0.1)  # Add some loops for more interesting exploration
+            # Default to Maze
+            self._generate_recursive_maze()
 
         return self.maze_grid
+
+    def _generate_recursive_maze(self):
+        """Standard Recursive Backtracker Maze."""
+        grid_height, grid_width = self.maze_grid.shape
+        self._carve_passages(1, 1)
+
+        # Create entrance on the outside (bottom wall)
+        entrance_x = random.choice(range(1, grid_width - 1, 2))
+        self.maze_grid[0, entrance_x] = 0
+        self.entrance_cell = (entrance_x, 0)
+        
+        # Ensure path to start
+        self.maze_grid[1, entrance_x] = 0
+
+        # Optionally create an exit on the opposite side
+        exit_x = random.choice(range(1, grid_width - 1, 2))
+        self.maze_grid[grid_height - 1, exit_x] = 0
+        
+        # Add connectivity
+        self._add_loops(0.1)
 
     def _generate_blank_box(self):
         """Generate a blank box environment with perimeter walls and single wall in middle."""
@@ -137,7 +152,203 @@ class MazeEnvironment:
         entrance_x = grid_width // 2
         self.maze_grid[0, entrance_x] = 0
         self.entrance_cell = (entrance_x, 0)
-    
+
+    def _generate_cave(self):
+        """Generate an organic cave system using Cellular Automata."""
+        grid_height, grid_width = self.maze_grid.shape
+        
+        # 1. Random noise initialization (45% walls)
+        for y in range(1, grid_height - 1):
+            for x in range(1, grid_width - 1):
+                self.maze_grid[y, x] = 1 if random.random() < 0.45 else 0
+
+        # 2. Cellular Automata Smoothing (5 iterations)
+        for _ in range(5):
+            new_grid = self.maze_grid.copy()
+            for y in range(1, grid_height - 1):
+                for x in range(1, grid_width - 1):
+                    # Count wall neighbors (including diagonals)
+                    neighbors = np.sum(self.maze_grid[y-1:y+2, x-1:x+2]) - self.maze_grid[y, x]
+                    
+                    if neighbors > 4:
+                        new_grid[y, x] = 1 # Become wall
+                    elif neighbors < 4:
+                        new_grid[y, x] = 0 # Become space
+            self.maze_grid = new_grid
+
+        # 3. Ensure connectivity (Remove isolated caves)
+        self._keep_largest_component(target_val=0)
+
+        # 4. Create entrance and ensure it connects to the largest component
+        # Find the lowest '0' cell in the grid
+        entrance_x = grid_width // 2
+        lowest_y = 0
+        
+        # Search for a connection point from bottom up
+        found_connection = False
+        for y in range(1, grid_height - 1):
+            if found_connection: break
+            for x in range(1, grid_width - 1):
+                if self.maze_grid[y, x] == 0:
+                    lowest_y = y
+                    entrance_x = x
+                    found_connection = True
+                    break
+        
+        # Dig a tunnel from the bottom edge to that point
+        self.entrance_cell = (entrance_x, 0)
+        for y in range(0, lowest_y + 1):
+            self.maze_grid[y, entrance_x] = 0
+
+    def _generate_tunnel(self):
+        """Generate a long winding tunnel (Snake pattern)."""
+        grid_height, grid_width = self.maze_grid.shape
+        
+        # Clear specific horizontal strips
+        # Leave a wall gap of 2 blocks between strips
+        strip_height = 2
+        wall_gap = 2
+        
+        # Calculate how many strips fit
+        num_strips = (grid_height - 2) // (strip_height + wall_gap)
+        
+        for i in range(num_strips):
+            y_start = 1 + i * (strip_height + wall_gap)
+            y_end = y_start + strip_height
+            
+            # Carve the horizontal strip
+            self.maze_grid[y_start:y_end, 1:-1] = 0
+            
+            # Connect to the next strip (Alternate Left/Right)
+            if i < num_strips - 1:
+                next_y_start = y_end
+                next_y_end = y_end + wall_gap
+                
+                if i % 2 == 0:
+                    # Connect on Right
+                    self.maze_grid[next_y_start:next_y_end, -3:-1] = 0
+                else:
+                    # Connect on Left
+                    self.maze_grid[next_y_start:next_y_end, 1:3] = 0
+
+        # Create Entrance connecting to the first strip
+        entrance_x = grid_width // 2
+        self.maze_grid[0, entrance_x] = 0
+        # Carve up to the first strip
+        for y in range(0, 2):
+            self.maze_grid[y, entrance_x] = 0
+        self.entrance_cell = (entrance_x, 0)
+
+    def _generate_rooms(self):
+        """Generate connected rooms (Dungeon style)."""
+        grid_height, grid_width = self.maze_grid.shape
+        
+        rooms = []
+        num_rooms = 15 # Attempt to place 15 rooms
+        
+        for _ in range(num_rooms):
+            # Random size
+            w = random.randint(3, 8)
+            h = random.randint(3, 8)
+            # Random pos (ensure odd coords for alignment)
+            x = random.randint(1, (grid_width - w - 1) // 2) * 2 + 1
+            y = random.randint(1, (grid_height - h - 1) // 2) * 2 + 1
+            
+            new_room = {'x': x, 'y': y, 'w': w, 'h': h}
+            
+            # Simple overlap check
+            failed = False
+            for other in rooms:
+                if (x < other['x'] + other['w'] and x + w > other['x'] and
+                    y < other['y'] + other['h'] and y + h > other['y']):
+                    failed = True
+                    break
+            
+            if not failed:
+                # Carve room
+                self.maze_grid[y:y+h, x:x+w] = 0
+                rooms.append(new_room)
+
+        # Connect rooms sequentially to ensure graph connectivity
+        # Sort rooms by Y then X to make clean paths
+        rooms.sort(key=lambda r: (r['y'], r['x']))
+        
+        for i in range(len(rooms) - 1):
+            r1 = rooms[i]
+            r2 = rooms[i+1]
+            
+            # Center points
+            c1 = (r1['x'] + r1['w']//2, r1['y'] + r1['h']//2)
+            c2 = (r2['x'] + r2['w']//2, r2['y'] + r2['h']//2)
+            
+            # Carve L-shaped corridor
+            if random.random() < 0.5:
+                # Horizontal then Vertical
+                self._carve_h_corridor(c1[0], c2[0], c1[1])
+                self._carve_v_corridor(c1[1], c2[1], c2[0])
+            else:
+                # Vertical then Horizontal
+                self._carve_v_corridor(c1[1], c2[1], c1[0])
+                self._carve_h_corridor(c1[0], c2[0], c2[1])
+
+        # Connect entrance to the first (lowest) room
+        if rooms:
+            first_room = rooms[0]
+            entrance_x = first_room['x'] + first_room['w'] // 2
+            self.maze_grid[0, entrance_x] = 0
+            # Carve up to the room
+            for y in range(0, first_room['y']):
+                self.maze_grid[y, entrance_x] = 0
+            self.entrance_cell = (entrance_x, 0)
+        else:
+            # Fallback if no rooms placed
+            self._generate_blank_box()
+
+    def _carve_h_corridor(self, x1, x2, y):
+        for x in range(min(x1, x2), max(x1, x2) + 1):
+            self.maze_grid[y, x] = 0
+            
+    def _carve_v_corridor(self, y1, y2, x):
+        for y in range(min(y1, y2), max(y1, y2) + 1):
+            self.maze_grid[y, x] = 0
+
+    def _keep_largest_component(self, target_val=0):
+        """Keep only the largest connected component of target_val, fill others."""
+        rows, cols = self.maze_grid.shape
+        visited = np.zeros_like(self.maze_grid, dtype=bool)
+        components = []
+        
+        for r in range(rows):
+            for c in range(cols):
+                if self.maze_grid[r, c] == target_val and not visited[r, c]:
+                    # Start BFS
+                    component = []
+                    queue = deque([(r, c)])
+                    visited[r, c] = True
+                    while queue:
+                        curr_r, curr_c = queue.popleft()
+                        component.append((curr_r, curr_c))
+                        
+                        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                            nr, nc = curr_r + dr, curr_c + dc
+                            if (0 <= nr < rows and 0 <= nc < cols and 
+                                self.maze_grid[nr, nc] == target_val and not visited[nr, nc]):
+                                visited[nr, nc] = True
+                                queue.append((nr, nc))
+                    components.append(component)
+        
+        if not components:
+            return
+
+        # Sort by size (largest first)
+        components.sort(key=len, reverse=True)
+        largest = components[0]
+        
+        # Fill all other components with 1 (wall)
+        for comp in components[1:]:
+            for r, c in comp:
+                self.maze_grid[r, c] = 1 # Fill
+
     def _carve_passages(self, cx, cy):
         """Carve passages in the maze using recursive backtracking."""
         directions = [(0, 2), (2, 0), (0, -2), (-2, 0)]
@@ -495,8 +706,21 @@ def main():
     print("\nEnvironment types:")
     print("  1. Maze (complex maze with walls)")
     print("  2. Blank box (empty room with single wall in middle)")
-    env_type_input = input("Choose environment type (1/2, default=1): ").strip()
-    env_type = 'blank_box' if env_type_input == '2' else 'maze'
+    print("  3. Cave (Organic cellular automata)")
+    print("  4. Tunnel (Long winding corridor)")
+    print("  5. Rooms (Dungeon with connected chambers)")
+    env_type_input = input("Choose environment type (1-5, default=1): ").strip()
+    
+    if env_type_input == '2':
+        env_type = 'blank_box'
+    elif env_type_input == '3':
+        env_type = 'cave'
+    elif env_type_input == '4':
+        env_type = 'tunnel'
+    elif env_type_input == '5':
+        env_type = 'rooms'
+    else:
+        env_type = 'maze'
 
     # 5. GUI Toggle
     gui_input = input("Show PyBullet 3D window? (y/n, default=y): ").strip().lower()
