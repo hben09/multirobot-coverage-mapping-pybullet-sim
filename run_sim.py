@@ -225,7 +225,9 @@ class Robot:
 class SubterraneanMapper:
     """Multi-robot mapper for subterranean maze environments"""
 
-    def __init__(self, use_gui=True, maze_size=(10, 10), cell_size=2.0, env_seed=None, env_type='maze'):
+    def __init__(self, use_gui=True, maze_size=(10, 10), cell_size=2.0, env_seed=None, env_type='maze', num_robots=3):
+        self.num_robots = num_robots
+        
         self.env = MazeEnvironment(
             maze_size=maze_size,
             cell_size=cell_size,
@@ -282,13 +284,36 @@ class SubterraneanMapper:
 
     def create_robots(self):
         spawn_pos = self.env.get_spawn_position()
-        # Line them up
-        start_positions = [
-            [spawn_pos[0] - 1.5, spawn_pos[1], 0.25],
-            [spawn_pos[0], spawn_pos[1], 0.25],
-            [spawn_pos[0] + 1.5, spawn_pos[1], 0.25]
+        
+        # Available colors for robots (16 distinct colors)
+        all_colors = [
+            [1, 0, 0, 1],        # Red
+            [0, 1, 0, 1],        # Green
+            [0, 0, 1, 1],        # Blue
+            [1, 1, 0, 1],        # Yellow
+            [1, 0, 1, 1],        # Magenta
+            [0, 1, 1, 1],        # Cyan
+            [1, 0.5, 0, 1],      # Orange
+            [0.5, 0, 1, 1],      # Purple
+            [0.5, 0.5, 0.5, 1],  # Gray
+            [1, 0.75, 0.8, 1],   # Pink
+            [0, 0.5, 0, 1],      # Dark Green
+            [0.5, 0.25, 0, 1],   # Brown
+            [0, 0, 0.5, 1],      # Navy
+            [0.5, 1, 0, 1],      # Lime
+            [1, 0.5, 0.5, 1],    # Salmon
+            [0, 0.5, 0.5, 1],    # Teal
         ]
-        colors = [[1, 0, 0, 1], [0, 1, 0, 1], [0, 0, 1, 1]]
+        
+        # Generate positions spread out from spawn point
+        start_positions = []
+        spacing = 1.5
+        for i in range(self.num_robots):
+            offset = (i - (self.num_robots - 1) / 2) * spacing
+            start_positions.append([spawn_pos[0] + offset, spawn_pos[1], 0.25])
+        
+        # Use colors (cycle if more robots than colors)
+        colors = [all_colors[i % len(all_colors)] for i in range(self.num_robots)]
 
         for i, (pos, color) in enumerate(zip(start_positions, colors)):
             collision_shape = p.createCollisionShape(p.GEOM_SPHERE, radius=0.25)
@@ -728,7 +753,6 @@ class SubterraneanMapper:
             'direction_bonus': direction_bonus,
             'alignment': alignment
         }
-    
 
     def assign_global_goals(self):
         """
@@ -908,8 +932,14 @@ class SubterraneanMapper:
                  self.map_bounds['y_min'], self.map_bounds['y_max']]
         ax_grid.imshow(grid_image, origin='lower', extent=extent, interpolation='nearest')
 
+        # Color names for visualization (16 distinct colors)
+        color_names = ['red', 'green', 'blue', 'yellow', 'magenta', 'cyan', 'orange', 'purple',
+                       'gray', 'pink', 'darkgreen', 'brown', 'navy', 'lime', 'salmon', 'teal']
+        
         # Plot robots with direction arrows
-        for robot, color in zip(self.robots, ['red', 'green', 'blue']):
+        for i, robot in enumerate(self.robots):
+            color = color_names[i % len(color_names)]
+            
             if robot.trajectory:
                 traj = np.array(robot.trajectory)
                 ax_grid.plot(traj[:, 0], traj[:, 1], c=color, linewidth=1.5, alpha=0.6)
@@ -924,7 +954,7 @@ class SubterraneanMapper:
             ax_grid.scatter(pos[0], pos[1], c=color, s=100, marker='^',
                           edgecolors='black', linewidths=1.5, zorder=5)
             
-            # NEW: Draw exploration direction arrow
+            # Draw exploration direction arrow
             arrow_len = 1.5
             ax_grid.arrow(pos[0], pos[1], 
                          robot.exploration_direction[0] * arrow_len,
@@ -980,7 +1010,8 @@ class SubterraneanMapper:
                               c='yellow', s=50, marker='o', edgecolors='red',
                               linewidths=2, label='Frontier Targets', zorder=10)
 
-        for robot, color in zip(self.robots, ['red', 'green', 'blue']):
+        for i, robot in enumerate(self.robots):
+            color = color_names[i % len(color_names)]
             pos, _ = p.getBasePositionAndOrientation(robot.id)
             ax_frontier.scatter(pos[0], pos[1], c=color, s=150, marker='^',
                               edgecolors='black', linewidths=2, zorder=6)
@@ -1123,20 +1154,27 @@ def main():
     gui_input = input("Show PyBullet 3D window? (y/n, default=n): ").strip().lower()
     use_gui = gui_input == 'y'
 
+    num_robots_input = input("Number of robots (1-16, default=3): ").strip()
+    if num_robots_input.isdigit():
+        num_robots = max(1, min(16, int(num_robots_input)))
+    else:
+        num_robots = 3
+
     steps_input = input("Number of simulation steps (press Enter for unlimited): ").strip()
     if steps_input.isdigit():
         max_steps = int(steps_input)
     else:
         max_steps = None
 
-    print(f"\nCreating {maze_size}x{maze_size} {env_type} with {cell_size}m cells...")
+    print(f"\nCreating {maze_size}x{maze_size} {env_type} with {cell_size}m cells and {num_robots} robots...")
     
     mapper = SubterraneanMapper(
         use_gui=use_gui,
         maze_size=(maze_size, maze_size),
         cell_size=cell_size,
         env_seed=env_seed,
-        env_type=env_type
+        env_type=env_type,
+        num_robots=num_robots
     )
 
     try:
