@@ -421,6 +421,10 @@ class SubterraneanMapper:
         self.distance_weight = 1.0        # Weight for distance cost
         self.volumetric_weight = 0.1      # Weight for volumetric gain
         
+        # Coordination / Crowding weights (NEW)
+        self.crowding_penalty_weight = 20.0  # Heavy penalty for targeting same area
+        self.crowding_radius = 8.0           # Radius (meters) to discourage other robots
+        
         # Volumetric gain estimation parameters
         self.volumetric_num_rays = 36     # Number of rays to cast
         self.volumetric_max_range = 8.0   # Max range for ray casting (meters)
@@ -916,18 +920,23 @@ class SubterraneanMapper:
 
     def assign_global_goals(self):
         """
-        Market-based Coordination loop with direction bias.
+        Market-based Coordination loop with direction bias AND CROWDING PENALTY.
         Assigns frontiers to robots based on improved Utility scores.
         """
         frontiers = self.detect_frontiers()
         if not frontiers:
             return
 
-        for robot in self.robots:
-            # Don't interrupt manual control
-            if robot.manual_control:
-                continue
-            
+        # 1. Track goals assigned in this specific planning round
+        # This allows Robot 2 to see where Robot 1 is going and avoid it.
+        current_round_goals = []
+        
+        # 2. Shuffle robot order to prevent bias (so Robot 0 doesn't always get first pick)
+        # We work on a copy or indices to not mess up the main list order
+        active_robots = [r for r in self.robots if not r.manual_control]
+        np.random.shuffle(active_robots)
+
+        for robot in active_robots:
             # Check if current goal is valid/reached
             needs_goal = False
             if robot.goal is None:
@@ -948,32 +957,48 @@ class SubterraneanMapper:
                 best_debug = None
                 
                 for f in frontiers:
-                    target_pos = f['pos']
+                    target_pos = np.array(f['pos'])
                     
-                    # Coordination: Check if claimed by another robot
+                    # Coordination 1: Hard Lock
+                    # Check if claimed by another robot (Old logic - still useful for exact duplicates)
                     is_claimed = False
                     for other_r in self.robots:
-                        if other_r.id == robot.id:
-                            continue
-                        if other_r.goal == target_pos:
+                        if other_r.id == robot.id: continue
+                        if other_r.goal == tuple(f['pos']):
                             is_claimed = True
                             break
-                    if is_claimed:
-                        continue
+                    if is_claimed: continue
                     
-                    # NEW: Use improved utility with direction bias
+                    # Calculate Base Utility
                     util, debug_info = self.calculate_utility(robot, f)
                     
-                    if util > best_utility:
-                        best_utility = util
-                        best_target = target_pos
+                    # --- Coordination 2: Soft Crowding Penalty (NEW) ---
+                    # Penalize this frontier if another robot has ALREADY picked a goal nearby 
+                    # in this planning round.
+                    crowding_penalty = 0.0
+                    for assigned_goal in current_round_goals:
+                        dist_to_assigned = np.linalg.norm(target_pos - np.array(assigned_goal))
+                        if dist_to_assigned < self.crowding_radius:
+                            # Linear penalty: Max penalty at 0 distance, 0 penalty at radius distance
+                            factor = 1.0 - (dist_to_assigned / self.crowding_radius)
+                            crowding_penalty += factor * self.crowding_penalty_weight
+                    
+                    final_utility = util - crowding_penalty
+                    
+                    if final_utility > best_utility:
+                        best_utility = final_utility
+                        best_target = f['pos']
                         best_grid_target = f['grid_pos']
                         best_debug = debug_info
                 
                 if best_target:
                     robot.goal = best_target
-                    robot.reset_stuck_state()  # Reset stuck detection for new goal
-                    robot.goal_attempts = 0    # Reset attempt counter on successful goal
+                    robot.reset_stuck_state()
+                    robot.goal_attempts = 0
+                    
+                    # Add to this round's goals so next robots avoid this area
+                    current_round_goals.append(best_target)
+                    
                     # Plan path using A*
                     start_grid = self.world_to_grid(pos[0], pos[1])
                     path = self.plan_path_astar(start_grid, best_grid_target)
@@ -1331,11 +1356,11 @@ class SubterraneanMapper:
 
     def run_simulation(self, steps=5000, scan_interval=10, use_gui=True, realtime_viz=True, viz_update_interval=50):
         print("Starting subterranean maze mapping simulation...")
-        print("*** DIRECTION BIAS + VOLUMETRIC GAIN ENABLED ***")
+        print("*** PERFORMANCE MODE: INCREMENTAL FRONTIERS + OCTILE HEURISTIC ***")
+        print("*** DIRECTION BIAS + VOLUMETRIC GAIN + CROWDING PENALTY ENABLED ***")
         print(f"  - Direction weight: {self.direction_bias_weight}")
         print(f"  - Volumetric weight: {self.volumetric_weight}")
-        print(f"  - Size weight: {self.size_weight}")
-        print(f"  - Distance weight: {self.distance_weight}")
+        print(f"  - Crowding Penalty: {self.crowding_penalty_weight} (Radius: {self.crowding_radius}m)")
         
         if steps is None:
             print("Running unlimited steps (press Ctrl+C to stop)...")
