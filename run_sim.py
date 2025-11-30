@@ -21,11 +21,115 @@ import matplotlib.pyplot as plt
 import os
 import math
 import heapq
+from datetime import datetime
 from environment_generator import MazeEnvironment
 
 # Import the Robot class and MultiRobotMapper from the original file
 import sys
 sys.path.append(os.path.dirname(__file__))
+
+
+class SimulationLogger:
+    """Logs simulation state for offline playback and analysis."""
+    
+    def __init__(self, log_dir="./logs"):
+        self.log_dir = log_dir
+        self.frames = []
+        self.metadata = {}
+        self.start_time = None
+        
+    def initialize(self, mapper, env_config):
+        """Initialize logger with simulation metadata."""
+        self.start_time = datetime.now()
+        
+        # Store metadata about the simulation
+        self.metadata = {
+            'timestamp': self.start_time.isoformat(),
+            'env_config': env_config,
+            'map_bounds': mapper.map_bounds.copy(),
+            'grid_resolution': mapper.grid_resolution,
+            'num_robots': len(mapper.robots),
+            'robot_colors': [robot.color for robot in mapper.robots],
+            'robot_home_positions': [robot.home_position.tolist() for robot in mapper.robots],
+            'total_free_cells': mapper.total_free_cells,
+            'maze_grid': mapper.env.maze_grid.copy(),
+        }
+        
+        self.frames = []
+        print(f"Logger initialized. Will save to: {self.log_dir}")
+        
+    def log_frame(self, step, mapper):
+        """Log a single frame of simulation state."""
+        frame = {
+            'step': step,
+            'coverage': mapper.calculate_coverage(),
+            'returning_home': mapper.returning_home,
+            
+            # Occupancy grid (store as dict with tuple keys converted to strings)
+            'occupancy_grid': {f"{k[0]},{k[1]}": v for k, v in mapper.occupancy_grid.items()},
+            'explored_cells': [list(c) for c in mapper.explored_cells],
+            'obstacle_cells': [list(c) for c in mapper.obstacle_cells],
+            
+            # Frontier data
+            'frontiers': mapper.detect_frontiers(),
+            
+            # Robot states
+            'robots': []
+        }
+        
+        for robot in mapper.robots:
+            pos, orn = p.getBasePositionAndOrientation(robot.id)
+            euler = p.getEulerFromQuaternion(orn)
+            
+            robot_state = {
+                'position': [pos[0], pos[1], pos[2]],
+                'orientation': euler[2],  # yaw
+                'goal': list(robot.goal) if robot.goal else None,
+                'path': [list(wp) for wp in robot.path] if robot.path else [],
+                'mode': robot.mode,
+                'exploration_direction': robot.exploration_direction.tolist(),
+                'trajectory': [list(t) for t in robot.trajectory[-100:]],  # Last 100 points
+                'global_graph_nodes': [list(n) for n in robot.global_graph_nodes],
+                'global_graph_edges': list(robot.global_graph_edges),
+            }
+            frame['robots'].append(robot_state)
+        
+        self.frames.append(frame)
+        
+    def save(self, filename=None):
+        """Save logged data to NPZ file."""
+        if not os.path.exists(self.log_dir):
+            os.makedirs(self.log_dir)
+            
+        if filename is None:
+            timestamp = self.start_time.strftime("%Y%m%d_%H%M%S")
+            filename = f"sim_log_{timestamp}.npz"
+            
+        filepath = os.path.join(self.log_dir, filename)
+        
+        # Convert to numpy-friendly format
+        save_data = {
+            'metadata': np.array([self.metadata], dtype=object),
+            'frames': np.array(self.frames, dtype=object),
+            'num_frames': len(self.frames),
+        }
+        
+        np.savez_compressed(filepath, **save_data)
+        print(f"\nSimulation log saved to: {filepath}")
+        print(f"  - Total frames: {len(self.frames)}")
+        print(f"  - File size: {os.path.getsize(filepath) / 1024 / 1024:.2f} MB")
+        
+        return filepath
+    
+    @staticmethod
+    def load(filepath):
+        """Load logged data from NPZ file."""
+        data = np.load(filepath, allow_pickle=True)
+        return {
+            'metadata': data['metadata'][0],
+            'frames': data['frames'].tolist(),
+            'num_frames': int(data['num_frames']),
+        }
 
 
 class Robot:
@@ -419,7 +523,7 @@ class SubterraneanMapper:
         self.direction_bias_weight = 2.5  # How much to reward forward motion
         self.size_weight = 0.3            # Weight for frontier size
         self.distance_weight = 1.0        # Weight for distance cost
-        self.volumetric_weight = 0.1      # Weight for volumetric gain
+        self.volumetric_weight = 0.0      # Weight for volumetric gain (disabled for performance)
         
         # Coordination / Crowding weights (NEW)
         self.crowding_penalty_weight = 100.0  # Heavy penalty for targeting same area
@@ -438,7 +542,17 @@ class SubterraneanMapper:
         # Safety margin
         # 0 cells = approx 0.25m buffer
         # 1 cell = approx 0.75m buffer (0.25m implicit + 0.5m explicit)
-        self.safety_margin = 1 
+        self.safety_margin = 1
+        
+        # Logging (initialized later if enabled)
+        self.logger = None
+        self.env_config = {
+            'maze_size': maze_size,
+            'cell_size': cell_size,
+            'env_seed': env_seed,
+            'env_type': env_type,
+            'num_robots': num_robots,
+        }
 
     def create_robots(self):
         spawn_pos = self.env.get_spawn_position()
@@ -887,9 +1001,13 @@ class SubterraneanMapper:
         # Size gain
         size_gain = frontier['size'] * self.size_weight
         
-        # Volumetric gain (how much unknown space would be revealed)
-        volumetric_count = self.estimate_volumetric_gain(frontier['pos'])
-        volumetric_gain = volumetric_count * self.volumetric_weight
+        # Volumetric gain (skip expensive calculation if weight is 0)
+        if self.volumetric_weight > 0:
+            volumetric_count = self.estimate_volumetric_gain(frontier['pos'])
+            volumetric_gain = volumetric_count * self.volumetric_weight
+        else:
+            volumetric_count = 0
+            volumetric_gain = 0.0
         
         # Direction alignment bonus
         to_frontier = frontier_pos - robot_pos
@@ -1375,7 +1493,20 @@ class SubterraneanMapper:
         self.realtime_fig.canvas.flush_events()
         plt.pause(0.001)
 
-    def run_simulation(self, steps=5000, scan_interval=10, use_gui=True, realtime_viz=True, viz_update_interval=50):
+    def run_simulation(self, steps=5000, scan_interval=10, use_gui=True, realtime_viz=True, 
+                       viz_update_interval=50, viz_mode='realtime', log_path='./logs'):
+        """
+        Run the simulation with configurable visualization and logging.
+        
+        Args:
+            steps: Number of simulation steps (None for unlimited)
+            scan_interval: Steps between LIDAR scans
+            use_gui: Whether to show PyBullet 3D window
+            realtime_viz: (DEPRECATED) Use viz_mode instead
+            viz_update_interval: Steps between visualization/logging updates
+            viz_mode: 'realtime' | 'logging' | 'both' | 'none'
+            log_path: Directory to save log files
+        """
         print("Starting subterranean maze mapping simulation...")
         print("*** PERFORMANCE MODE: INCREMENTAL FRONTIERS + OCTILE HEURISTIC ***")
         print("*** DIRECTION BIAS + VOLUMETRIC GAIN + CROWDING PENALTY ENABLED ***")
@@ -1388,9 +1519,25 @@ class SubterraneanMapper:
         else:
             print(f"Running for {steps} steps...")
 
-        if realtime_viz:
+        # Determine visualization mode
+        do_realtime = viz_mode in ['realtime', 'both']
+        do_logging = viz_mode in ['logging', 'both']
+        
+        print(f"Visualization mode: {viz_mode}")
+        if do_realtime:
+            print("  - Real-time visualization: ENABLED")
+        if do_logging:
+            print(f"  - Logging: ENABLED (saving to {log_path})")
+
+        # Setup realtime visualization if enabled
+        if do_realtime:
             print("Setting up real-time visualization...")
             self.setup_realtime_visualization()
+            
+        # Setup logging if enabled
+        if do_logging:
+            self.logger = SimulationLogger(log_dir=log_path)
+            self.logger.initialize(self, self.env_config)
 
         step = 0
         while True:
@@ -1403,7 +1550,7 @@ class SubterraneanMapper:
                 break
 
             # COORDINATION STEP (Global Planner)
-            if step % 20 == 0:
+            if step % 200 == 0:
                 coverage = self.calculate_coverage()
                 
                 # Check if we should trigger return-to-home
@@ -1433,7 +1580,7 @@ class SubterraneanMapper:
             # SENSING STEP
             if step % scan_interval == 0:
                 for robot in self.robots:
-                    robot.get_lidar_scan(num_rays=180, max_range=15)
+                    robot.get_lidar_scan(num_rays=90, max_range=15)
                     self.update_occupancy_grid(robot)
                     
                     # Update global graph while exploring
@@ -1447,8 +1594,12 @@ class SubterraneanMapper:
                 if step % 100 == 0:
                     self.clear_volumetric_cache()
 
-            if realtime_viz and step % viz_update_interval == 0:
-                self.update_realtime_visualization(step)
+            # VISUALIZATION / LOGGING STEP
+            if step % viz_update_interval == 0:
+                if do_realtime:
+                    self.update_realtime_visualization(step)
+                if do_logging:
+                    self.logger.log_frame(step, self)
 
             p.stepSimulation()
 
@@ -1462,14 +1613,228 @@ class SubterraneanMapper:
 
             step += 1
 
-        if realtime_viz:
+        # Final frame
+        if do_realtime:
             self.update_realtime_visualization(step)
             print("\nReal-time visualization complete.")
+            
+        if do_logging:
+            self.logger.log_frame(step, self)  # Log final state
+            log_filepath = self.logger.save()
+            
+            # Automatically generate MP4 video
+            print("\nGenerating MP4 video from log...")
+            video_path = log_filepath.replace('.npz', '.mp4')
+            self.generate_video_from_log(log_filepath, video_path)
+            
+            print(f"\nTo replay this simulation interactively, run:")
+            print(f"  python playback.py {log_filepath}")
 
         print("\nSimulation complete!")
         final_coverage = self.calculate_coverage()
         print(f"Final Coverage: {final_coverage:.2f}%")
         print(f"Explored Free Cells: {int(final_coverage/100 * self.total_free_cells)}/{int(self.total_free_cells)}")
+
+    def generate_video_from_log(self, log_filepath, video_path, fps=30, dpi=100):
+        """Generate MP4 video from a simulation log file."""
+        import matplotlib.animation as animation
+        
+        # Load the log data
+        data = SimulationLogger.load(log_filepath)
+        metadata = data['metadata']
+        frames = data['frames']
+        num_frames = data['num_frames']
+        
+        print(f"  Rendering {num_frames} frames to {video_path}...")
+        
+        # Color names for visualization
+        color_names = ['red', 'green', 'blue', 'yellow', 'magenta', 'cyan', 
+                      'orange', 'purple', 'gray', 'pink', 'darkgreen', 'brown', 
+                      'navy', 'lime', 'salmon', 'teal']
+        
+        # Setup figure (same layout as realtime viz)
+        fig = plt.figure(figsize=(18, 14))
+        gs = fig.add_gridspec(2, 2, height_ratios=[3, 1], hspace=0.25, wspace=0.2)
+        
+        axes = {
+            'grid': fig.add_subplot(gs[0, 0]),
+            'frontier': fig.add_subplot(gs[0, 1]),
+            'coverage': fig.add_subplot(gs[1, :]),
+        }
+        
+        env_config = metadata['env_config']
+        title = f"Simulation: {env_config['env_type']} {env_config['maze_size']} | {env_config['num_robots']} robots"
+        fig.suptitle(title, fontsize=14, fontweight='bold')
+        
+        def grid_to_world(grid_x, grid_y):
+            x = metadata['map_bounds']['x_min'] + (grid_x + 0.5) * metadata['grid_resolution']
+            y = metadata['map_bounds']['y_min'] + (grid_y + 0.5) * metadata['grid_resolution']
+            return (x, y)
+        
+        def render_frame(frame_idx):
+            if frame_idx >= len(frames):
+                return []
+                
+            frame = frames[frame_idx]
+            
+            for ax in axes.values():
+                ax.clear()
+                
+            # === Occupancy Grid ===
+            ax_grid = axes['grid']
+            bounds = metadata['map_bounds']
+            resolution = metadata['grid_resolution']
+            
+            grid_x_size = int((bounds['x_max'] - bounds['x_min']) / resolution)
+            grid_y_size = int((bounds['y_max'] - bounds['y_min']) / resolution)
+            grid_image = np.ones((grid_y_size, grid_x_size, 3)) * 0.7
+            
+            for cell_str, value in frame['occupancy_grid'].items():
+                gx, gy = map(int, cell_str.split(','))
+                if 0 <= gx < grid_x_size and 0 <= gy < grid_y_size:
+                    if value == 1:
+                        grid_image[gy, gx] = [1, 1, 1]
+                    elif value == 2:
+                        grid_image[gy, gx] = [0, 0, 0]
+                        
+            extent = [bounds['x_min'], bounds['x_max'], bounds['y_min'], bounds['y_max']]
+            ax_grid.imshow(grid_image, origin='lower', extent=extent, interpolation='nearest')
+            
+            # Draw robots
+            for i, robot_state in enumerate(frame['robots']):
+                color = color_names[i % len(color_names)]
+                pos = robot_state['position']
+                
+                # Trajectory
+                if robot_state['trajectory']:
+                    traj = np.array(robot_state['trajectory'])
+                    ax_grid.plot(traj[:, 0], traj[:, 1], c=color, linewidth=1.5, alpha=0.6)
+                
+                # Global graph edges
+                for edge in robot_state['global_graph_edges']:
+                    n1, n2 = edge
+                    nodes = robot_state['global_graph_nodes']
+                    if n1 < len(nodes) and n2 < len(nodes):
+                        p1, p2 = nodes[n1], nodes[n2]
+                        ax_grid.plot([p1[0], p2[0]], [p1[1], p2[1]], c=color, linewidth=1, alpha=0.3)
+                
+                # Planned path
+                if robot_state['path']:
+                    path_world = [grid_to_world(p[0], p[1]) for p in robot_state['path']]
+                    path_arr = np.array(path_world)
+                    ax_grid.plot(path_arr[:, 0], path_arr[:, 1], c=color, linestyle=':', linewidth=2)
+                
+                # Robot marker
+                ax_grid.scatter(pos[0], pos[1], c=color, s=100, marker='^',
+                              edgecolors='black', linewidths=1.5, zorder=5)
+                
+                # Exploration direction arrow
+                exp_dir = robot_state['exploration_direction']
+                arrow_len = 1.5
+                ax_grid.arrow(pos[0], pos[1], exp_dir[0] * arrow_len, exp_dir[1] * arrow_len,
+                             head_width=0.3, head_length=0.2, fc=color, ec='black', alpha=0.7, zorder=6)
+                
+                # Goal marker
+                if robot_state['goal']:
+                    goal = robot_state['goal']
+                    ax_grid.scatter(goal[0], goal[1], c=color, s=150, marker='X',
+                                  edgecolors='white', linewidths=2, zorder=6)
+                
+                # Home position
+                home = metadata['robot_home_positions'][i]
+                ax_grid.scatter(home[0], home[1], c=color, s=100, marker='s',
+                              edgecolors='white', linewidths=2, zorder=4)
+            
+            status = "RETURNING HOME" if frame['returning_home'] else "EXPLORING"
+            ax_grid.set_title(f'Occupancy Grid | Step {frame["step"]} | Status: {status}')
+            ax_grid.set_aspect('equal')
+            ax_grid.grid(True, alpha=0.3)
+            ax_grid.text(0.02, 0.98, f'Coverage: {frame["coverage"]:.1f}%',
+                        transform=ax_grid.transAxes, verticalalignment='top',
+                        bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.9))
+            
+            # === Frontier Map ===
+            ax_frontier = axes['frontier']
+            
+            if frame['explored_cells']:
+                explored_points = []
+                for cell in frame['explored_cells']:
+                    cell_key = f"{cell[0]},{cell[1]}"
+                    if frame['occupancy_grid'].get(cell_key) == 1:
+                        x, y = grid_to_world(cell[0], cell[1])
+                        explored_points.append([x, y])
+                if explored_points:
+                    explored_arr = np.array(explored_points)
+                    ax_frontier.scatter(explored_arr[:, 0], explored_arr[:, 1],
+                                      c='lightblue', s=3, alpha=0.4, marker='s')
+            
+            if frame['obstacle_cells']:
+                obstacle_points = [grid_to_world(c[0], c[1]) for c in frame['obstacle_cells']]
+                obstacle_arr = np.array(obstacle_points)
+                ax_frontier.scatter(obstacle_arr[:, 0], obstacle_arr[:, 1], c='black', s=3, marker='s')
+            
+            if frame['frontiers']:
+                frontier_points = [f['pos'] for f in frame['frontiers']]
+                frontier_arr = np.array(frontier_points)
+                ax_frontier.scatter(frontier_arr[:, 0], frontier_arr[:, 1],
+                                  c='yellow', s=50, marker='o', edgecolors='red', linewidths=2, zorder=10)
+            
+            for i, robot_state in enumerate(frame['robots']):
+                color = color_names[i % len(color_names)]
+                pos = robot_state['position']
+                ax_frontier.scatter(pos[0], pos[1], c=color, s=150, marker='^',
+                                  edgecolors='black', linewidths=2, zorder=6)
+            
+            ax_frontier.set_xlim(bounds['x_min'] - 5, bounds['x_max'] + 5)
+            ax_frontier.set_ylim(bounds['y_min'] - 5, bounds['y_max'] + 5)
+            ax_frontier.set_aspect('equal')
+            ax_frontier.grid(True, alpha=0.3)
+            num_frontiers = len(frame['frontiers']) if frame['frontiers'] else 0
+            ax_frontier.set_title(f'Frontier Detection ({num_frontiers} targets)')
+            ax_frontier.set_xlabel('X (meters)')
+            ax_frontier.set_ylabel('Y (meters)')
+            
+            # === Coverage Graph ===
+            ax_coverage = axes['coverage']
+            
+            steps_list = [f['step'] for f in frames[:frame_idx + 1]]
+            coverages = [f['coverage'] for f in frames[:frame_idx + 1]]
+            
+            if steps_list:
+                ax_coverage.plot(steps_list, coverages, linewidth=2, color='blue')
+                ax_coverage.fill_between(steps_list, coverages, alpha=0.3, color='blue')
+                ax_coverage.axhline(y=frame['coverage'], color='red', linestyle='--', alpha=0.5)
+            
+            ax_coverage.set_xlabel('Simulation Step')
+            ax_coverage.set_ylabel('Coverage (%)')
+            ax_coverage.set_title('Coverage Progress')
+            ax_coverage.grid(True, alpha=0.3)
+            ax_coverage.set_ylim(0, 100)
+            if frames:
+                max_step = frames[-1]['step']
+                ax_coverage.set_xlim(0, max(2000, max_step))
+            
+            return []
+        
+        def animate(frame_idx):
+            render_frame(frame_idx)
+            if frame_idx % 20 == 0:
+                print(f"    Frame {frame_idx}/{num_frames} ({100*frame_idx/num_frames:.0f}%)")
+            return []
+        
+        ani = animation.FuncAnimation(fig, animate, frames=num_frames, interval=1000/fps, blit=True)
+        
+        # Save video
+        try:
+            writer = animation.FFMpegWriter(fps=fps, bitrate=5000)
+            ani.save(video_path, writer=writer, dpi=dpi)
+            print(f"  Video saved: {video_path}")
+            print(f"  File size: {os.path.getsize(video_path) / 1024 / 1024:.2f} MB")
+        except Exception as e:
+            print(f"  Warning: Could not save video (ffmpeg may not be installed): {e}")
+            print(f"  You can still replay interactively with: python playback.py {log_filepath}")
+        
+        plt.close(fig)
 
     def cleanup(self):
         self.env.close()
@@ -1528,6 +1893,23 @@ def main():
     else:
         max_steps = None
 
+    # Visualization mode selection
+    print("\nVisualization modes:")
+    print("  1. realtime - Live matplotlib window (default)")
+    print("  2. logging  - Log to file for offline playback (faster)")
+    print("  3. both     - Live visualization AND logging")
+    print("  4. none     - No visualization (fastest)")
+    viz_mode_input = input("Choose visualization mode (1-4, default=1): ").strip()
+    
+    if viz_mode_input == '2':
+        viz_mode = 'logging'
+    elif viz_mode_input == '3':
+        viz_mode = 'both'
+    elif viz_mode_input == '4':
+        viz_mode = 'none'
+    else:
+        viz_mode = 'realtime'
+
     print(f"\nCreating {maze_size}x{maze_size} {env_type} with {cell_size}m cells and {num_robots} robots...")
     
     mapper = SubterraneanMapper(
@@ -1544,12 +1926,22 @@ def main():
             steps=max_steps,
             scan_interval=10,
             use_gui=use_gui,
-            realtime_viz=True,
-            viz_update_interval=50
+            viz_mode=viz_mode,
+            viz_update_interval=50,
+            log_path='./logs'
         )
 
     except KeyboardInterrupt:
         print("\nSimulation interrupted by user")
+        # Save log and generate video if logging was enabled
+        if mapper.logger is not None and len(mapper.logger.frames) > 0:
+            print("Saving partial log...")
+            log_filepath = mapper.logger.save()
+            
+            # Generate video from partial log
+            print("\nGenerating MP4 video from partial log...")
+            video_path = log_filepath.replace('.npz', '.mp4')
+            mapper.generate_video_from_log(log_filepath, video_path)
     finally:
         if mapper.realtime_fig is not None:
             plt.close(mapper.realtime_fig)
