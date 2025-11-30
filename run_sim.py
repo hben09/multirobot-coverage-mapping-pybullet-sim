@@ -269,10 +269,16 @@ class SubterraneanMapper:
         self.realtime_axes = None
         self.claimed_goals = {}
         
-        # NEW: Direction bias parameters (tunable)
+        # Utility function weights
         self.direction_bias_weight = 2.5  # How much to reward forward motion
-        self.size_weight = 0.5            # Weight for frontier size
+        self.size_weight = 0.3            # Weight for frontier size
         self.distance_weight = 1.0        # Weight for distance cost
+        self.volumetric_weight = 0.1      # Weight for volumetric gain
+        
+        # Volumetric gain estimation parameters
+        self.volumetric_num_rays = 36     # Number of rays to cast
+        self.volumetric_max_range = 8.0   # Max range for ray casting (meters)
+        self.volumetric_cache = {}        # Cache to avoid recalculating
 
     def create_robots(self):
         spawn_pos = self.env.get_spawn_position()
@@ -609,14 +615,75 @@ class SubterraneanMapper:
                 
         return path
 
+    def estimate_volumetric_gain(self, frontier_pos):
+        """
+        Estimate how much unknown space would be revealed from a frontier position.
+        
+        Casts rays from the frontier and counts unknown cells that would be seen.
+        This is inspired by GBPlanner's volumetric gain calculation.
+        
+        Args:
+            frontier_pos: (x, y) world coordinates of frontier
+            
+        Returns:
+            int: Estimated number of unknown cells that would be revealed
+        """
+        # Check cache first (frontier positions don't change much between calls)
+        cache_key = (round(frontier_pos[0], 1), round(frontier_pos[1], 1))
+        if cache_key in self.volumetric_cache:
+            return self.volumetric_cache[cache_key]
+        
+        unknown_count = 0
+        fx, fy = frontier_pos
+        
+        # Cast rays in all directions
+        for i in range(self.volumetric_num_rays):
+            angle = 2.0 * np.pi * i / self.volumetric_num_rays
+            cos_a = np.cos(angle)
+            sin_a = np.sin(angle)
+            
+            # Step along the ray
+            step_size = self.grid_resolution
+            for dist in np.arange(step_size, self.volumetric_max_range, step_size):
+                check_x = fx + dist * cos_a
+                check_y = fy + dist * sin_a
+                
+                # Check bounds
+                if not (self.map_bounds['x_min'] <= check_x <= self.map_bounds['x_max'] and
+                       self.map_bounds['y_min'] <= check_y <= self.map_bounds['y_max']):
+                    break
+                
+                cell = self.world_to_grid(check_x, check_y)
+                
+                # If we hit an obstacle, stop this ray
+                if cell in self.obstacle_cells:
+                    break
+                
+                # If cell is unknown, count it as potential gain
+                if cell not in self.occupancy_grid:
+                    unknown_count += 1
+        
+        # Cache the result
+        self.volumetric_cache[cache_key] = unknown_count
+        
+        return unknown_count
+
+    def clear_volumetric_cache(self):
+        """Clear the volumetric gain cache (call when map updates significantly)."""
+        self.volumetric_cache = {}
+
     def calculate_utility(self, robot, frontier):
         """
-        IMPROVED Utility Function with Direction Bias (GBPlanner-inspired)
+        Utility Function with Direction Bias and Volumetric Gain (GBPlanner-inspired)
         
-        Utility = (Size × size_weight) - (Distance × dist_weight) + (Alignment × direction_weight)
+        Utility = (Volumetric × vol_weight) + (Size × size_weight) 
+                  - (Distance × dist_weight) + (Alignment × direction_weight)
         
-        The alignment term rewards frontiers that are in the robot's current
-        exploration direction, reducing oscillation at intersections.
+        Components:
+        - Volumetric gain: How much unknown space would be revealed
+        - Size gain: How large the frontier cluster is
+        - Distance cost: How far the robot must travel
+        - Direction bonus: Alignment with current exploration direction
         """
         pos, orn = p.getBasePositionAndOrientation(robot.id)
         robot_pos = np.array([pos[0], pos[1]])
@@ -624,15 +691,16 @@ class SubterraneanMapper:
         
         # Distance cost
         dist = np.linalg.norm(frontier_pos - robot_pos)
+        distance_cost = dist * self.distance_weight
         
         # Size gain
         size_gain = frontier['size'] * self.size_weight
         
-        # Distance cost
-        distance_cost = dist * self.distance_weight
+        # Volumetric gain (how much unknown space would be revealed)
+        volumetric_count = self.estimate_volumetric_gain(frontier['pos'])
+        volumetric_gain = volumetric_count * self.volumetric_weight
         
-        # NEW: Direction alignment bonus
-        # Use the robot's smoothed exploration direction
+        # Direction alignment bonus
         to_frontier = frontier_pos - robot_pos
         to_frontier_norm = np.linalg.norm(to_frontier)
         
@@ -643,24 +711,24 @@ class SubterraneanMapper:
             alignment = np.dot(robot.exploration_direction, to_frontier_unit)
             
             # Transform from [-1, 1] to [0, 1] for the bonus
-            # alignment=1 (forward) -> bonus=1
-            # alignment=0 (perpendicular) -> bonus=0.5
-            # alignment=-1 (backward) -> bonus=0
             alignment_normalized = (alignment + 1.0) / 2.0
-            
             direction_bonus = alignment_normalized * self.direction_bias_weight
         else:
+            alignment = 0.0
             direction_bonus = 0.0
         
         # Final utility
-        utility = size_gain - distance_cost + direction_bonus
+        utility = volumetric_gain + size_gain - distance_cost + direction_bonus
         
         return utility, {
+            'volumetric_gain': volumetric_gain,
+            'volumetric_count': volumetric_count,
             'size_gain': size_gain,
             'distance_cost': distance_cost,
             'direction_bonus': direction_bonus,
-            'alignment': alignment if to_frontier_norm > 0.1 else 0.0
+            'alignment': alignment
         }
+    
 
     def assign_global_goals(self):
         """
@@ -946,8 +1014,9 @@ class SubterraneanMapper:
 
     def run_simulation(self, steps=5000, scan_interval=10, use_gui=True, realtime_viz=True, viz_update_interval=50):
         print("Starting subterranean maze mapping simulation...")
-        print("*** DIRECTION BIAS ENABLED ***")
+        print("*** DIRECTION BIAS + VOLUMETRIC GAIN ENABLED ***")
         print(f"  - Direction weight: {self.direction_bias_weight}")
+        print(f"  - Volumetric weight: {self.volumetric_weight}")
         print(f"  - Size weight: {self.size_weight}")
         print(f"  - Distance weight: {self.distance_weight}")
         
@@ -981,6 +1050,10 @@ class SubterraneanMapper:
 
                 coverage = self.calculate_coverage()
                 self.coverage_history.append((step, coverage))
+                
+                # Clear volumetric cache periodically as map changes
+                if step % 100 == 0:
+                    self.clear_volumetric_cache()
 
             if realtime_viz and step % viz_update_interval == 0:
                 self.update_realtime_visualization(step)
