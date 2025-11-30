@@ -782,8 +782,10 @@ class SubterraneanMapper:
 
     def setup_realtime_visualization(self):
         plt.ion()
-        self.realtime_fig = plt.figure(figsize=(15, 10))
-        gs = self.realtime_fig.add_gridspec(2, 2, hspace=0.3, wspace=0.3)
+        # Larger figure with more space for top maps
+        self.realtime_fig = plt.figure(figsize=(18, 14))
+        # Give top row (maps) 3x the height of bottom row (coverage graph)
+        gs = self.realtime_fig.add_gridspec(2, 2, height_ratios=[3, 1], hspace=0.25, wspace=0.2)
 
         self.realtime_axes = {
             'grid': self.realtime_fig.add_subplot(gs[0, 0]),
