@@ -422,7 +422,7 @@ class SubterraneanMapper:
         self.volumetric_weight = 0.1      # Weight for volumetric gain
         
         # Coordination / Crowding weights (NEW)
-        self.crowding_penalty_weight = 20.0  # Heavy penalty for targeting same area
+        self.crowding_penalty_weight = 100.0  # Heavy penalty for targeting same area
         self.crowding_radius = 8.0           # Radius (meters) to discourage other robots
         
         # Volumetric gain estimation parameters
@@ -924,92 +924,111 @@ class SubterraneanMapper:
         """
         Market-based Coordination loop with direction bias AND CROWDING PENALTY.
         Assigns frontiers to robots based on improved Utility scores.
+        
+        UPDATED: Now re-evaluates goals every cycle for all robots (Dynamic Replanning).
+        Adds hysteresis (persistence_bias) to prevent jitter.
         """
         frontiers = self.detect_frontiers()
         if not frontiers:
             return
 
         # 1. Track goals assigned in this specific planning round
-        # This allows Robot 2 to see where Robot 1 is going and avoid it.
         current_round_goals = []
         
-        # 2. Shuffle robot order to prevent bias (so Robot 0 doesn't always get first pick)
-        # We work on a copy or indices to not mess up the main list order
+        # 2. Shuffle robot order to prevent bias
         active_robots = [r for r in self.robots if not r.manual_control]
         np.random.shuffle(active_robots)
 
         for robot in active_robots:
-            # Check if current goal is valid/reached
-            needs_goal = False
-            if robot.goal is None:
-                needs_goal = True
-            else:
-                pos, _ = p.getBasePositionAndOrientation(robot.id)
+            pos, _ = p.getBasePositionAndOrientation(robot.id)
+            
+            # Determine current goal status
+            current_goal_pos = None
+            if robot.goal:
+                current_goal_pos = np.array(robot.goal)
+                # Check if reached (cleanup logic)
                 dist = np.sqrt((robot.goal[0] - pos[0])**2 + (robot.goal[1] - pos[1])**2)
                 if dist < 1.0 and not robot.path:
-                    needs_goal = True
+                    robot.goal = None # Reached, so no current goal bias needed
+                    current_goal_pos = None
+
+            robot.mode = 'GLOBAL_RELOCATE' # Ensure we are in exploration mode
+
+            best_utility = -9999
+            best_target = None
+            best_grid_target = None
             
-            if needs_goal:
-                robot.mode = 'GLOBAL_RELOCATE'
-                pos, _ = p.getBasePositionAndOrientation(robot.id)
+            # Hysteresis: Bonus for sticking to the current goal to prevent jitter
+            persistence_bias = 5.0 
+
+            for f in frontiers:
+                target_pos = np.array(f['pos'])
                 
-                best_utility = -9999
-                best_target = None
-                best_grid_target = None
-                best_debug = None
+                # Coordination 1: Hard Lock (SKIP THIS for the current robot if checking against itself)
+                # Check if claimed by another robot (Old logic - still useful for exact duplicates)
+                is_claimed = False
+                for other_r in self.robots:
+                    if other_r.id == robot.id: continue # Don't block self
+                    if other_r.goal == tuple(f['pos']):
+                        is_claimed = True
+                        break
+                if is_claimed: continue
                 
-                for f in frontiers:
-                    target_pos = np.array(f['pos'])
-                    
-                    # Coordination 1: Hard Lock
-                    # Check if claimed by another robot (Old logic - still useful for exact duplicates)
-                    is_claimed = False
-                    for other_r in self.robots:
-                        if other_r.id == robot.id: continue
-                        if other_r.goal == tuple(f['pos']):
-                            is_claimed = True
-                            break
-                    if is_claimed: continue
-                    
-                    # Calculate Base Utility
-                    util, debug_info = self.calculate_utility(robot, f)
-                    
-                    # --- Coordination 2: Soft Crowding Penalty (NEW) ---
-                    # Penalize this frontier if another robot has ALREADY picked a goal nearby 
-                    # in this planning round.
-                    crowding_penalty = 0.0
-                    for assigned_goal in current_round_goals:
-                        dist_to_assigned = np.linalg.norm(target_pos - np.array(assigned_goal))
-                        if dist_to_assigned < self.crowding_radius:
-                            # Linear penalty: Max penalty at 0 distance, 0 penalty at radius distance
-                            factor = 1.0 - (dist_to_assigned / self.crowding_radius)
-                            crowding_penalty += factor * self.crowding_penalty_weight
-                    
-                    final_utility = util - crowding_penalty
-                    
-                    if final_utility > best_utility:
-                        best_utility = final_utility
-                        best_target = f['pos']
-                        best_grid_target = f['grid_pos']
-                        best_debug = debug_info
+                # Calculate Base Utility
+                util, debug_info = self.calculate_utility(robot, f)
                 
-                if best_target:
+                # --- Coordination 2: Soft Crowding Penalty ---
+                crowding_penalty = 0.0
+                for assigned_goal in current_round_goals:
+                    # Penalize proximity to other robots' planned goals in THIS round
+                    dist_to_assigned = np.linalg.norm(target_pos - np.array(assigned_goal))
+                    if dist_to_assigned < self.crowding_radius:
+                        factor = 1.0 - (dist_to_assigned / self.crowding_radius)
+                        crowding_penalty += factor * self.crowding_penalty_weight
+                
+                # --- Persistence Bonus ---
+                # If this frontier is very close to our current goal, add a bonus
+                if current_goal_pos is not None:
+                    dist_to_current = np.linalg.norm(target_pos - current_goal_pos)
+                    if dist_to_current < 2.0: # 2 meters tolerance
+                        util += persistence_bias
+
+                final_utility = util - crowding_penalty
+                
+                if final_utility > best_utility:
+                    best_utility = final_utility
+                    best_target = f['pos']
+                    best_grid_target = f['grid_pos']
+            
+            # Assign the best found target
+            if best_target:
+                # Only replan if the goal actually changes significantly
+                should_replan = True
+                if robot.goal is not None:
+                    dist_change = np.linalg.norm(np.array(best_target) - np.array(robot.goal))
+                    if dist_change < 1.0:
+                        should_replan = False # Same goal, don't churn A*
+                
+                if should_replan:
                     robot.goal = best_target
                     robot.reset_stuck_state()
                     robot.goal_attempts = 0
-                    
-                    # Add to this round's goals so next robots avoid this area
-                    current_round_goals.append(best_target)
                     
                     # Plan path using A*
                     start_grid = self.world_to_grid(pos[0], pos[1])
                     path = self.plan_path_astar(start_grid, best_grid_target)
                     if path:
                         robot.path = path
+                        print(f"Robot {robot.id}: Switched goal to new frontier (Utility: {best_utility:.1f})")
                     else:
-                        robot.goal = None
-                else:
-                    # No best target - spin to search
+                        robot.goal = None # Failed to plan
+                
+                # Add to this round's goals regardless of replan, so others avoid it
+                current_round_goals.append(best_target)
+
+            else:
+                # No valid targets found (rare)
+                if robot.goal is None:
                     robot.move(0.0, 1.0)
 
     def exploration_logic(self, robot, step):
