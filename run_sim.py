@@ -1040,114 +1040,102 @@ class SubterraneanMapper:
 
     def assign_global_goals(self):
         """
-        Market-based Coordination loop with direction bias AND CROWDING PENALTY.
-        Assigns frontiers to robots based on improved Utility scores.
-        
-        UPDATED: Now re-evaluates goals every cycle for all robots (Dynamic Replanning).
-        Adds hysteresis (persistence_bias) to prevent jitter.
+        Market-based Coordination loop (Improved: Global Best-First).
+        Prioritizes the best Robot-Frontier match globally to prevent 
+        robots from 'stealing' targets from closer robots.
         """
         frontiers = self.detect_frontiers()
         if not frontiers:
             return
 
-        # 1. Track goals assigned in this specific planning round
-        current_round_goals = []
-        
-        # 2. Shuffle robot order to prevent bias
+        # 1. Prepare robots
         active_robots = [r for r in self.robots if not r.manual_control]
-        np.random.shuffle(active_robots)
-
         for robot in active_robots:
-            pos, _ = p.getBasePositionAndOrientation(robot.id)
-            
-            # Determine current goal status
-            current_goal_pos = None
-            if robot.goal:
-                current_goal_pos = np.array(robot.goal)
-                # Check if reached (cleanup logic)
-                dist = np.sqrt((robot.goal[0] - pos[0])**2 + (robot.goal[1] - pos[1])**2)
-                if dist < 1.0 and not robot.path:
-                    robot.goal = None # Reached, so no current goal bias needed
-                    current_goal_pos = None
+             robot.mode = 'GLOBAL_RELOCATE' 
 
-            robot.mode = 'GLOBAL_RELOCATE' # Ensure we are in exploration mode
+        # 2. Track assigned goals in this frame to calculate dynamic crowding
+        current_round_goals = []
+        unassigned_robots = active_robots.copy()
 
-            best_utility = -9999
-            best_target = None
-            best_grid_target = None
-            
-            # Hysteresis: Bonus for sticking to the current goal to prevent jitter
-            persistence_bias = 5.0 
+        # 3. Iterative Auction: Find and assign the global best match repeatedly
+        # This prevents "lucky" distant robots from locking out closer robots
+        while unassigned_robots:
+            best_global_utility = -float('inf')
+            best_pair = None # Tuple: (robot, frontier_data)
 
-            for f in frontiers:
-                target_pos = np.array(f['pos'])
+            # Check every unassigned robot against every frontier
+            for robot in unassigned_robots:
                 
-                # Coordination 1: Hard Lock (SKIP THIS for the current robot if checking against itself)
-                # Check if claimed by another robot (Old logic - still useful for exact duplicates)
-                is_claimed = False
-                for other_r in self.robots:
-                    if other_r.id == robot.id: continue # Don't block self
-                    if other_r.goal == tuple(f['pos']):
-                        is_claimed = True
-                        break
-                if is_claimed: continue
-                
-                # Calculate Base Utility
-                util, debug_info = self.calculate_utility(robot, f)
-                
-                # --- Coordination 2: Soft Crowding Penalty ---
-                crowding_penalty = 0.0
-                for assigned_goal in current_round_goals:
-                    # Penalize proximity to other robots' planned goals in THIS round
-                    dist_to_assigned = np.linalg.norm(target_pos - np.array(assigned_goal))
-                    if dist_to_assigned < self.crowding_radius:
-                        factor = 1.0 - (dist_to_assigned / self.crowding_radius)
-                        crowding_penalty += factor * self.crowding_penalty_weight
-                
-                # --- Persistence Bonus ---
-                # If this frontier is very close to our current goal, add a bonus
-                if current_goal_pos is not None:
-                    dist_to_current = np.linalg.norm(target_pos - current_goal_pos)
-                    if dist_to_current < 2.0: # 2 meters tolerance
-                        util += persistence_bias
+                # Persistence logic: get current goal location
+                current_goal_pos = None
+                if robot.goal:
+                    current_goal_pos = np.array(robot.goal)
 
-                final_utility = util - crowding_penalty
+                for f in frontiers:
+                    target_pos = np.array(f['pos'])
+
+                    # --- Calculate Utility ---
+                    # 1. Base Utility (Distance, Size, Direction)
+                    # We utilize the cache in calculate_utility so this is fast
+                    util, _ = self.calculate_utility(robot, f)
+                    
+                    # 2. Crowding Penalty (Checking against goals assigned SO FAR in this loop)
+                    crowding_penalty = 0.0
+                    for assigned_goal in current_round_goals:
+                        dist_to_assigned = np.linalg.norm(target_pos - np.array(assigned_goal))
+                        if dist_to_assigned < self.crowding_radius:
+                            factor = 1.0 - (dist_to_assigned / self.crowding_radius)
+                            crowding_penalty += factor * self.crowding_penalty_weight
+                    
+                    # 3. Persistence Bonus (Hysteresis)
+                    persistence_bias = 5.0
+                    if current_goal_pos is not None:
+                        dist_to_current = np.linalg.norm(target_pos - current_goal_pos)
+                        if dist_to_current < 2.0:
+                            util += persistence_bias
+
+                    final_utility = util - crowding_penalty
+
+                    # Is this the best match we've seen in the entire group?
+                    if final_utility > best_global_utility:
+                        best_global_utility = final_utility
+                        best_pair = (robot, f)
+
+            # 4. Lock in the best assignment found
+            if best_pair:
+                winner_robot, winning_frontier = best_pair
+                target_pos = winning_frontier['pos']
                 
-                if final_utility > best_utility:
-                    best_utility = final_utility
-                    best_target = f['pos']
-                    best_grid_target = f['grid_pos']
-            
-            # Assign the best found target
-            if best_target:
-                # Only replan if the goal actually changes significantly
+                # Only replan if significant change (prevents micro-adjustments)
                 should_replan = True
-                if robot.goal is not None:
-                    dist_change = np.linalg.norm(np.array(best_target) - np.array(robot.goal))
+                if winner_robot.goal is not None:
+                    dist_change = np.linalg.norm(np.array(target_pos) - np.array(winner_robot.goal))
                     if dist_change < 1.0:
-                        should_replan = False # Same goal, don't churn A*
+                        should_replan = False
                 
                 if should_replan:
-                    robot.goal = best_target
-                    robot.reset_stuck_state()
-                    robot.goal_attempts = 0
+                    winner_robot.goal = target_pos
+                    winner_robot.reset_stuck_state()
+                    winner_robot.goal_attempts = 0
                     
                     # Plan path using A*
+                    pos, _ = p.getBasePositionAndOrientation(winner_robot.id)
                     start_grid = self.world_to_grid(pos[0], pos[1])
-                    path = self.plan_path_astar(start_grid, best_grid_target)
+                    path = self.plan_path_astar(start_grid, winning_frontier['grid_pos'])
+                    
                     if path:
-                        robot.path = path
-                        print(f"Robot {robot.id}: Switched goal to new frontier (Utility: {best_utility:.1f})")
+                        winner_robot.path = path
+                        print(f"Robot {winner_robot.id}: Assigned goal (Global Utility: {best_global_utility:.1f})")
                     else:
-                        robot.goal = None # Failed to plan
-                
-                # Add to this round's goals regardless of replan, so others avoid it
-                current_round_goals.append(best_target)
+                        winner_robot.goal = None # Failed to plan
 
+                # Mark as assigned and remove from pool
+                current_round_goals.append(target_pos)
+                unassigned_robots.remove(winner_robot)
+                
             else:
-                # No valid targets found (rare)
-                if robot.goal is None:
-                    robot.move(0.0, 1.0)
+                # No valid assignments found (rare, usually means penalties outweighed all benefits)
+                break
 
     def exploration_logic(self, robot, step):
         if robot.manual_control:
