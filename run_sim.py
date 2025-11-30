@@ -1,8 +1,8 @@
 """
-Multi-robot coverage mapping simulation for subterranean maze environments
-Uses the ProceduralEnvironment class from environment_generator to create procedurally generated mazes
+Multi-robot coverage mapping simulation for procedurally generated environments
+Uses the ProceduralEnvironment class from environment_generator to create mazes, caves, tunnels, and rooms
 
-IMPROVED VERSION: 
+IMPROVED VERSION:
 1. Added direction bias to reduce oscillation.
 2. FIXED LIDAR: Now handles max-range "misses" to clear free space in open areas.
 
@@ -363,8 +363,8 @@ class Robot:
         return linear_vel, angular_vel
 
 
-class SubterraneanMapper:
-    """Multi-robot mapper for subterranean maze environments"""
+class CoverageMapper:
+    """Multi-robot coverage mapper for procedurally generated environments"""
 
     def __init__(self, use_gui=True, maze_size=(10, 10), cell_size=2.0, env_seed=None, env_type='maze', num_robots=3):
         self.num_robots = num_robots
@@ -1144,7 +1144,7 @@ class SubterraneanMapper:
             'coverage': self.realtime_fig.add_subplot(gs[1, :])
         }
 
-        title = 'Subterranean Maze Mapping (WITH DIRECTION BIAS)\n(Scroll to Zoom, Click to control RED robot)'
+        title = 'Multi-Robot Coverage Mapping (WITH DIRECTION BIAS)\n(Scroll to Zoom, Click to control RED robot)'
         self.realtime_fig.suptitle(title, fontsize=14, fontweight='bold')
         self.realtime_fig.canvas.mpl_connect('button_press_event', self.on_map_click)
         self.realtime_fig.canvas.mpl_connect('scroll_event', self.on_scroll)
@@ -1392,7 +1392,7 @@ class SubterraneanMapper:
             viz_mode: 'realtime' | 'logging' | 'both' | 'none'
             log_path: Directory to save log files
         """
-        print("Starting subterranean maze mapping simulation...")
+        print("Starting multi-robot coverage mapping simulation...")
         print("*** PERFORMANCE MODE: INCREMENTAL FRONTIERS + OCTILE HEURISTIC ***")
         print("*** DIRECTION BIAS + VOLUMETRIC GAIN + CROWDING PENALTY ENABLED ***")
         print(f"  - Direction weight: {self.direction_bias_weight}")
@@ -1726,7 +1726,7 @@ class SubterraneanMapper:
 
 def main():
     print("=" * 60)
-    print("Multi-Robot Subterranean Maze Coverage Mapping")
+    print("Multi-Robot Coverage Mapping")
     print("IMPROVED VERSION WITH DIRECTION BIAS")
     print("=" * 60)
 
@@ -1795,8 +1795,8 @@ def main():
         viz_mode = 'realtime'
 
     print(f"\nCreating {maze_size}x{maze_size} {env_type} with {cell_size}m cells and {num_robots} robots...")
-    
-    mapper = SubterraneanMapper(
+
+    mapper = CoverageMapper(
         use_gui=use_gui,
         maze_size=(maze_size, maze_size),
         cell_size=cell_size,
