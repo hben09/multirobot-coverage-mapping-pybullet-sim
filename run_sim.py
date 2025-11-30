@@ -436,7 +436,9 @@ class SubterraneanMapper:
         self.robots_home = set()          # Track which robots have arrived home
         
         # Safety margin
-        self.safety_margin = 0 # 0 cells = approx 0.25m buffer
+        # 0 cells = approx 0.25m buffer
+        # 1 cell = approx 0.75m buffer (0.25m implicit + 0.5m explicit)
+        self.safety_margin = 1 
 
     def create_robots(self):
         spawn_pos = self.env.get_spawn_position()
