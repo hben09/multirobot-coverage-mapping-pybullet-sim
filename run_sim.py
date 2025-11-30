@@ -411,6 +411,10 @@ class SubterraneanMapper:
         self.realtime_axes = None
         self.claimed_goals = {}
         
+        # Zoom/View Control
+        self.current_xlim = None
+        self.current_ylim = None
+        
         # Utility function weights
         self.direction_bias_weight = 2.5  # How much to reward forward motion
         self.size_weight = 0.3            # Weight for frontier size
@@ -1091,10 +1095,47 @@ class SubterraneanMapper:
             'coverage': self.realtime_fig.add_subplot(gs[1, :])
         }
 
-        title = 'Subterranean Maze Mapping (WITH DIRECTION BIAS)\n(Click on grid map to control RED robot)'
+        title = 'Subterranean Maze Mapping (WITH DIRECTION BIAS)\n(Scroll to Zoom, Click to control RED robot)'
         self.realtime_fig.suptitle(title, fontsize=14, fontweight='bold')
         self.realtime_fig.canvas.mpl_connect('button_press_event', self.on_map_click)
+        self.realtime_fig.canvas.mpl_connect('scroll_event', self.on_scroll)
         plt.show(block=False)
+
+    def on_scroll(self, event):
+        """Handle mouse scroll for zooming in/out."""
+        if event.inaxes not in [self.realtime_axes['grid'], self.realtime_axes['frontier']]:
+            return
+
+        # Get current limits
+        cur_xlim = event.inaxes.get_xlim()
+        cur_ylim = event.inaxes.get_ylim()
+        
+        xdata = event.xdata # Mouse position in data coordinates
+        ydata = event.ydata
+        
+        if xdata is None or ydata is None:
+            return
+
+        # Zoom factor
+        base_scale = 1.2
+        if event.button == 'up':
+            # Zoom in
+            scale_factor = 1 / base_scale
+        elif event.button == 'down':
+            # Zoom out
+            scale_factor = base_scale
+        else:
+            return
+
+        # Calculate new limits to zoom towards mouse cursor
+        new_width = (cur_xlim[1] - cur_xlim[0]) * scale_factor
+        new_height = (cur_ylim[1] - cur_ylim[0]) * scale_factor
+
+        relx = (cur_xlim[1] - xdata) / (cur_xlim[1] - cur_xlim[0])
+        rely = (cur_ylim[1] - ydata) / (cur_ylim[1] - cur_ylim[0])
+
+        self.current_xlim = [xdata - new_width * (1 - relx), xdata + new_width * relx]
+        self.current_ylim = [ydata - new_height * (1 - rely), ydata + new_height * rely]
 
     def on_map_click(self, event):
         if event.inaxes == self.realtime_axes['grid']:
@@ -1196,9 +1237,17 @@ class SubterraneanMapper:
                 ax_grid.scatter(robot.goal[0], robot.goal[1], c=color, s=150,
                               marker='X', edgecolors='white', linewidths=2, zorder=6)
 
-        bounds_margin = 5
-        ax_grid.set_xlim(self.map_bounds['x_min'] - bounds_margin, self.map_bounds['x_max'] + bounds_margin)
-        ax_grid.set_ylim(self.map_bounds['y_min'] - bounds_margin, self.map_bounds['y_max'] + bounds_margin)
+        # --- VIEWPORT MANAGEMENT ---
+        # Initialize default view if not set
+        if self.current_xlim is None or self.current_ylim is None:
+            bounds_margin = 5
+            self.current_xlim = [self.map_bounds['x_min'] - bounds_margin, self.map_bounds['x_max'] + bounds_margin]
+            self.current_ylim = [self.map_bounds['y_min'] - bounds_margin, self.map_bounds['y_max'] + bounds_margin]
+
+        # Apply stored limits (persists zoom across updates)
+        ax_grid.set_xlim(self.current_xlim)
+        ax_grid.set_ylim(self.current_ylim)
+        
         ax_grid.set_aspect('equal')
         ax_grid.grid(True, alpha=0.3)
         
@@ -1251,8 +1300,10 @@ class SubterraneanMapper:
             ax_frontier.scatter(pos[0], pos[1], c=color, s=150, marker='^',
                               edgecolors='black', linewidths=2, zorder=6)
 
-        ax_frontier.set_xlim(self.map_bounds['x_min'] - bounds_margin, self.map_bounds['x_max'] + bounds_margin)
-        ax_frontier.set_ylim(self.map_bounds['y_min'] - bounds_margin, self.map_bounds['y_max'] + bounds_margin)
+        # Sync frontier map view with grid map view
+        ax_frontier.set_xlim(self.current_xlim)
+        ax_frontier.set_ylim(self.current_ylim)
+        
         ax_frontier.set_aspect('equal')
         ax_frontier.grid(True, alpha=0.3)
         ax_frontier.set_title(f'Frontier Detection\n({len(frontiers_data)} targets)')
