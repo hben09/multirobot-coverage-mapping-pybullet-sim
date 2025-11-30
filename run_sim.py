@@ -2,9 +2,11 @@
 Multi-robot coverage mapping simulation for subterranean maze environments
 Uses the MazeEnvironment class from environment_generator to create procedurally generated mazes
 
+IMPROVED VERSION: Added direction bias to reduce oscillation at intersections
+
 Architectural influences:
 1. MGG Planner: Bifurcated Local/Global state machine.
-2. GBPlanner: Frontier-based target generation.
+2. GBPlanner: Frontier-based target generation with DIRECTION BIAS.
 3. AMET: Utility-based coordination (Size - Distance).
 4. NeBula: A* Pathfinding on risk/occupancy grid.
 """
@@ -34,9 +36,81 @@ class Robot:
         
         # Autonomy State
         self.goal = None
-        self.path = [] # List of grid waypoints from A*
+        self.path = []  # List of grid waypoints from A*
         self.manual_control = False
-        self.mode = 'IDLE' 
+        self.mode = 'IDLE'
+        
+        # NEW: Direction tracking for exploration bias
+        self.exploration_direction = np.array([1.0, 0.0])  # Initial heading (east)
+        self.direction_history = []  # Track recent movement directions
+        self.direction_smoothing_window = 10  # Number of samples to average
+        
+        # NEW: Stuck detection
+        self.stuck_counter = 0
+        self.last_position = np.array(position[:2])
+        self.goal_attempts = 0
+        self.max_goal_attempts = 3  # Give up after 3 failed attempts to reach a goal
+
+    def update_exploration_direction(self):
+        """
+        Update the robot's exploration direction based on recent movement.
+        Uses a low-pass filter over recent trajectory points (like GBPlanner).
+        """
+        if len(self.trajectory) < 2:
+            return
+        
+        # Get recent trajectory segment
+        recent_points = self.trajectory[-min(20, len(self.trajectory)):]
+        
+        if len(recent_points) >= 2:
+            # Calculate direction from older point to newer point
+            start = np.array(recent_points[0])
+            end = np.array(recent_points[-1])
+            direction = end - start
+            
+            norm = np.linalg.norm(direction)
+            if norm > 0.5:  # Only update if we've moved meaningfully
+                direction = direction / norm
+                
+                # Smooth with existing direction (low-pass filter)
+                alpha = 0.3  # Smoothing factor
+                self.exploration_direction = (
+                    alpha * direction + 
+                    (1 - alpha) * self.exploration_direction
+                )
+                # Renormalize
+                self.exploration_direction /= np.linalg.norm(self.exploration_direction)
+
+    def get_heading_vector(self):
+        """Get the robot's current facing direction from physics."""
+        pos, orn = p.getBasePositionAndOrientation(self.id)
+        euler = p.getEulerFromQuaternion(orn)
+        yaw = euler[2]
+        return np.array([np.cos(yaw), np.sin(yaw)])
+
+    def check_if_stuck(self, threshold=0.3, stuck_limit=50):
+        """
+        Check if robot is stuck (not moving despite having a goal).
+        Returns True if stuck.
+        """
+        pos, _ = p.getBasePositionAndOrientation(self.id)
+        current_pos = np.array([pos[0], pos[1]])
+        
+        distance_moved = np.linalg.norm(current_pos - self.last_position)
+        
+        if distance_moved < threshold:
+            self.stuck_counter += 1
+        else:
+            self.stuck_counter = 0
+            self.last_position = current_pos
+        
+        return self.stuck_counter > stuck_limit
+
+    def reset_stuck_state(self):
+        """Reset stuck detection when getting a new goal."""
+        self.stuck_counter = 0
+        pos, _ = p.getBasePositionAndOrientation(self.id)
+        self.last_position = np.array([pos[0], pos[1]])
 
     def get_lidar_scan(self, num_rays=360, max_range=10):
         """Simulate lidar by casting rays in 360 degrees"""
@@ -74,6 +148,10 @@ class Robot:
 
         self.lidar_data.extend(scan_points)
         self.trajectory.append((pos[0], pos[1]))
+        
+        # NEW: Update exploration direction after recording trajectory
+        self.update_exploration_direction()
+        
         return scan_points
 
     def move(self, linear_vel, angular_vel):
@@ -111,8 +189,8 @@ class Robot:
             
             # Waypoint acceptance radius
             if dist < 0.6:
-                self.path.pop(0) # Waypoint reached
-                if self.path: # If more points, recurse to get next target
+                self.path.pop(0)  # Waypoint reached
+                if self.path:  # If more points, recurse to get next target
                     return self.follow_path(mapper)
 
         # Drive to target_pos (Pure Pursuit / Proportional Control)
@@ -165,7 +243,7 @@ class SubterraneanMapper:
         self.create_robots()
 
         self.grid_resolution = 0.5
-        self.occupancy_grid = {} # 1=Free, 2=Obstacle
+        self.occupancy_grid = {}  # 1=Free, 2=Obstacle
         self.explored_cells = set()
         self.obstacle_cells = set()
 
@@ -189,7 +267,12 @@ class SubterraneanMapper:
         self.coverage_history = []
         self.realtime_fig = None
         self.realtime_axes = None
-        self.claimed_goals = {} 
+        self.claimed_goals = {}
+        
+        # NEW: Direction bias parameters (tunable)
+        self.direction_bias_weight = 2.5  # How much to reward forward motion
+        self.size_weight = 0.5            # Weight for frontier size
+        self.distance_weight = 1.0        # Weight for distance cost
 
     def create_robots(self):
         spawn_pos = self.env.get_spawn_position()
@@ -213,7 +296,6 @@ class SubterraneanMapper:
             )
 
             # Physics: Prevent rolling, allow sliding
-            # Increased lateral friction to support 4.0 m/s turns without drifting
             p.changeDynamics(robot_id, -1, localInertiaDiagonal=[0, 0, 1])
             p.changeDynamics(robot_id, -1, lateralFriction=1.0, spinningFriction=0.1, rollingFriction=0.0)
 
@@ -280,11 +362,13 @@ class SubterraneanMapper:
         """Detect and cluster frontier cells."""
         frontiers = set()
         for cell in self.explored_cells:
-            if self.occupancy_grid.get(cell) != 1: continue
+            if self.occupancy_grid.get(cell) != 1:
+                continue
             x, y = cell
             for dx in [-1, 0, 1]:
                 for dy in [-1, 0, 1]:
-                    if dx == 0 and dy == 0: continue
+                    if dx == 0 and dy == 0:
+                        continue
                     neighbor = (x + dx, y + dy)
                     world_x, world_y = self.grid_to_world(neighbor[0], neighbor[1])
                     # Check bounds
@@ -296,7 +380,8 @@ class SubterraneanMapper:
                         frontiers.add(cell)
                         break
         
-        if not frontiers: return []
+        if not frontiers:
+            return []
 
         # Clustering
         frontier_list = list(frontiers)
@@ -304,7 +389,8 @@ class SubterraneanMapper:
         clusters = []
 
         for f in frontier_list:
-            if f in visited: continue
+            if f in visited:
+                continue
             cluster = []
             queue = [f]
             visited.add(f)
@@ -314,7 +400,8 @@ class SubterraneanMapper:
                 cx, cy = current
                 for dx in [-1, 0, 1]:
                     for dy in [-1, 0, 1]:
-                        if dx == 0 and dy == 0: continue
+                        if dx == 0 and dy == 0:
+                            continue
                         nbr = (cx + dx, cy + dy)
                         if nbr in frontiers and nbr not in visited:
                             visited.add(nbr)
@@ -322,9 +409,7 @@ class SubterraneanMapper:
             
             # Filter small noise
             if len(cluster) > 2:
-                # Improved Centroid Calculation:
-                # Find the member of the cluster closest to the mathematical centroid.
-                # This prevents the target from falling into a wall for C-shaped frontiers.
+                # Find the member of the cluster closest to the mathematical centroid
                 avg_x = sum(c[0] for c in cluster) / len(cluster)
                 avg_y = sum(c[1] for c in cluster) / len(cluster)
                 
@@ -344,6 +429,7 @@ class SubterraneanMapper:
     def plan_path_astar(self, start_grid, goal_grid):
         """
         A* Pathfinding on the occupancy grid.
+        FIXED: Prevents diagonal corner cutting and adds obstacle buffer.
         """
         def heuristic(a, b):
             return np.sqrt((b[0] - a[0])**2 + (b[1] - a[1])**2)
@@ -355,14 +441,50 @@ class SubterraneanMapper:
         came_from[start_grid] = None
         cost_so_far[start_grid] = 0
         
-        # Safety: Don't plan too close to obstacles
-        def is_safe(cell):
-            if cell in self.obstacle_cells: return False
-            if cell not in self.occupancy_grid: return False # Treat unknown as blocked for safety planning
+        # Pre-compute inflated obstacles (1-cell buffer around walls)
+        inflated_obstacles = set(self.obstacle_cells)
+        for obs in self.obstacle_cells:
+            for dx in [-1, 0, 1]:
+                for dy in [-1, 0, 1]:
+                    inflated_obstacles.add((obs[0] + dx, obs[1] + dy))
+        
+        def is_safe(cell, check_buffer=True):
+            """Check if cell is safe to traverse."""
+            # Check if it's a known obstacle
+            if cell in self.obstacle_cells:
+                return False
+            # Check if it's in the buffer zone (too close to walls)
+            if check_buffer and cell in inflated_obstacles:
+                # Allow if it's the start or goal (we might start near a wall)
+                if cell != start_grid and cell != goal_grid:
+                    return False
+            # Must be explored (known free space)
+            if cell not in self.occupancy_grid:
+                return False
+            return True
+        
+        def can_move_diagonal(current, dx, dy):
+            """
+            Check if diagonal movement is valid.
+            Prevents corner cutting through walls.
+            """
+            # For diagonal moves, both adjacent cardinal cells must be free
+            # e.g., to move NE (+1,+1), both N (0,+1) and E (+1,0) must be clear
+            if abs(dx) == 1 and abs(dy) == 1:
+                cardinal1 = (current[0] + dx, current[1])  # Horizontal neighbor
+                cardinal2 = (current[0], current[1] + dy)  # Vertical neighbor
+                
+                # Both cardinal directions must be free (not obstacles)
+                if cardinal1 in self.obstacle_cells or cardinal2 in self.obstacle_cells:
+                    return False
             return True
 
         found = False
-        while frontier:
+        iterations = 0
+        max_iterations = 10000  # Prevent infinite loops
+        
+        while frontier and iterations < max_iterations:
+            iterations += 1
             current = heapq.heappop(frontier)[1]
 
             if current == goal_grid:
@@ -371,10 +493,18 @@ class SubterraneanMapper:
 
             for dx in [-1, 0, 1]:
                 for dy in [-1, 0, 1]:
-                    if dx == 0 and dy == 0: continue
+                    if dx == 0 and dy == 0:
+                        continue
+                    
                     next_cell = (current[0] + dx, current[1] + dy)
                     
-                    if not is_safe(next_cell): continue
+                    # Basic safety check
+                    if not is_safe(next_cell, check_buffer=True):
+                        continue
+                    
+                    # FIXED: Check diagonal corner cutting
+                    if not can_move_diagonal(current, dx, dy):
+                        continue
 
                     new_cost = cost_so_far[current] + np.sqrt(dx*dx + dy*dy)
                     if next_cell not in cost_so_far or new_cost < cost_so_far[next_cell]:
@@ -384,9 +514,8 @@ class SubterraneanMapper:
                         came_from[next_cell] = current
         
         if not found:
-            # Fallback: try to get close? Or just return empty.
-            # For now, return empty, robot will pick new goal next cycle.
-            return []
+            # Try again without buffer if no path found (robot might be in tight space)
+            return self._plan_path_astar_no_buffer(start_grid, goal_grid)
             
         # Reconstruct path
         path = []
@@ -396,31 +525,147 @@ class SubterraneanMapper:
             curr = came_from[curr]
         path.reverse()
         
-        # Optimization: Downsample path (keep every 3rd point) to be smoother
-        if len(path) > 5:
-            path = path[::3]
-            # Ensure goal is kept
+        # Downsample path for smoother motion (but keep more points for accuracy)
+        if len(path) > 8:
+            path = path[::2]  # Keep every 2nd point instead of every 3rd
+            if path[-1] != goal_grid:
+                path.append(goal_grid)
+                
+        return path
+    
+    def _plan_path_astar_no_buffer(self, start_grid, goal_grid):
+        """Fallback A* without obstacle inflation for tight spaces."""
+        def heuristic(a, b):
+            return np.sqrt((b[0] - a[0])**2 + (b[1] - a[1])**2)
+
+        frontier = []
+        heapq.heappush(frontier, (0, start_grid))
+        came_from = {}
+        cost_so_far = {}
+        came_from[start_grid] = None
+        cost_so_far[start_grid] = 0
+        
+        def is_safe(cell):
+            if cell in self.obstacle_cells:
+                return False
+            if cell not in self.occupancy_grid:
+                return False
+            return True
+        
+        def can_move_diagonal(current, dx, dy):
+            if abs(dx) == 1 and abs(dy) == 1:
+                cardinal1 = (current[0] + dx, current[1])
+                cardinal2 = (current[0], current[1] + dy)
+                if cardinal1 in self.obstacle_cells or cardinal2 in self.obstacle_cells:
+                    return False
+            return True
+
+        found = False
+        iterations = 0
+        max_iterations = 10000
+        
+        while frontier and iterations < max_iterations:
+            iterations += 1
+            current = heapq.heappop(frontier)[1]
+
+            if current == goal_grid:
+                found = True
+                break
+
+            for dx in [-1, 0, 1]:
+                for dy in [-1, 0, 1]:
+                    if dx == 0 and dy == 0:
+                        continue
+                    
+                    next_cell = (current[0] + dx, current[1] + dy)
+                    
+                    if not is_safe(next_cell):
+                        continue
+                    
+                    if not can_move_diagonal(current, dx, dy):
+                        continue
+
+                    new_cost = cost_so_far[current] + np.sqrt(dx*dx + dy*dy)
+                    if next_cell not in cost_so_far or new_cost < cost_so_far[next_cell]:
+                        cost_so_far[next_cell] = new_cost
+                        priority = new_cost + heuristic(goal_grid, next_cell)
+                        heapq.heappush(frontier, (priority, next_cell))
+                        came_from[next_cell] = current
+        
+        if not found:
+            return []
+            
+        path = []
+        curr = goal_grid
+        while curr != start_grid:
+            path.append(curr)
+            curr = came_from[curr]
+        path.reverse()
+        
+        if len(path) > 8:
+            path = path[::2]
             if path[-1] != goal_grid:
                 path.append(goal_grid)
                 
         return path
 
-    def calculate_utility(self, robot_pos, frontier):
+    def calculate_utility(self, robot, frontier):
         """
-        AMET Utility Function: Gain - Cost
-        Gain = Size * 0.5
-        Cost = Distance * 1.0
+        IMPROVED Utility Function with Direction Bias (GBPlanner-inspired)
+        
+        Utility = (Size × size_weight) - (Distance × dist_weight) + (Alignment × direction_weight)
+        
+        The alignment term rewards frontiers that are in the robot's current
+        exploration direction, reducing oscillation at intersections.
         """
-        fx, fy = frontier['pos']
-        dist = np.sqrt((fx - robot_pos[0])**2 + (fy - robot_pos[1])**2)
-        gain = frontier['size'] * 0.5 
-        cost = dist * 1.0
-        return gain - cost
+        pos, orn = p.getBasePositionAndOrientation(robot.id)
+        robot_pos = np.array([pos[0], pos[1]])
+        frontier_pos = np.array(frontier['pos'])
+        
+        # Distance cost
+        dist = np.linalg.norm(frontier_pos - robot_pos)
+        
+        # Size gain
+        size_gain = frontier['size'] * self.size_weight
+        
+        # Distance cost
+        distance_cost = dist * self.distance_weight
+        
+        # NEW: Direction alignment bonus
+        # Use the robot's smoothed exploration direction
+        to_frontier = frontier_pos - robot_pos
+        to_frontier_norm = np.linalg.norm(to_frontier)
+        
+        if to_frontier_norm > 0.1:
+            to_frontier_unit = to_frontier / to_frontier_norm
+            
+            # Dot product gives alignment: +1 (same direction) to -1 (opposite)
+            alignment = np.dot(robot.exploration_direction, to_frontier_unit)
+            
+            # Transform from [-1, 1] to [0, 1] for the bonus
+            # alignment=1 (forward) -> bonus=1
+            # alignment=0 (perpendicular) -> bonus=0.5
+            # alignment=-1 (backward) -> bonus=0
+            alignment_normalized = (alignment + 1.0) / 2.0
+            
+            direction_bonus = alignment_normalized * self.direction_bias_weight
+        else:
+            direction_bonus = 0.0
+        
+        # Final utility
+        utility = size_gain - distance_cost + direction_bonus
+        
+        return utility, {
+            'size_gain': size_gain,
+            'distance_cost': distance_cost,
+            'direction_bonus': direction_bonus,
+            'alignment': alignment if to_frontier_norm > 0.1 else 0.0
+        }
 
     def assign_global_goals(self):
         """
-        Market-based Coordination loop.
-        Assigns frontiers to robots based on Utility scores.
+        Market-based Coordination loop with direction bias.
+        Assigns frontiers to robots based on improved Utility scores.
         """
         frontiers = self.detect_frontiers()
         if not frontiers:
@@ -428,7 +673,8 @@ class SubterraneanMapper:
 
         for robot in self.robots:
             # Don't interrupt manual control
-            if robot.manual_control: continue
+            if robot.manual_control:
+                continue
             
             # Check if current goal is valid/reached
             needs_goal = False
@@ -447,6 +693,7 @@ class SubterraneanMapper:
                 best_utility = -9999
                 best_target = None
                 best_grid_target = None
+                best_debug = None
                 
                 for f in frontiers:
                     target_pos = f['pos']
@@ -454,35 +701,37 @@ class SubterraneanMapper:
                     # Coordination: Check if claimed by another robot
                     is_claimed = False
                     for other_r in self.robots:
-                        if other_r.id == robot.id: continue
+                        if other_r.id == robot.id:
+                            continue
                         if other_r.goal == target_pos:
                             is_claimed = True
                             break
-                    if is_claimed: continue
+                    if is_claimed:
+                        continue
                     
-                    util = self.calculate_utility(pos, f)
+                    # NEW: Use improved utility with direction bias
+                    util, debug_info = self.calculate_utility(robot, f)
+                    
                     if util > best_utility:
                         best_utility = util
                         best_target = target_pos
                         best_grid_target = f['grid_pos']
+                        best_debug = debug_info
                 
                 if best_target:
                     robot.goal = best_target
+                    robot.reset_stuck_state()  # Reset stuck detection for new goal
+                    robot.goal_attempts = 0    # Reset attempt counter on successful goal
                     # Plan path using A*
                     start_grid = self.world_to_grid(pos[0], pos[1])
-                    # Ensure start/end are safe (sometimes frontier edge is technically 'unknown')
-                    # We assume frontier detection handles valid 'free' neighbors, 
-                    # but A* handles safety checks.
                     path = self.plan_path_astar(start_grid, best_grid_target)
                     if path:
                         robot.path = path
                     else:
-                        # A* failed (maybe goal is unreachable). 
-                        # Reset goal to force re-pick next cycle.
                         robot.goal = None
                 else:
-                    # No best target? Just explore randomly nearby to unstick
-                    robot.move(0.0, 1.0) # Spin
+                    # No best target - spin to search
+                    robot.move(0.0, 1.0)
 
     def exploration_logic(self, robot, step):
         if robot.manual_control:
@@ -491,6 +740,20 @@ class SubterraneanMapper:
             return
 
         if robot.goal:
+            # Check if robot is stuck
+            if robot.check_if_stuck(threshold=0.2, stuck_limit=100):
+                print(f"Robot {robot.id} is stuck! Abandoning goal and replanning...")
+                robot.goal = None
+                robot.path = []
+                robot.reset_stuck_state()
+                robot.goal_attempts += 1
+                
+                # If stuck too many times, spin to reorient
+                if robot.goal_attempts > robot.max_goal_attempts:
+                    robot.move(0.0, 2.0)  # Spin fast to break free
+                    robot.goal_attempts = 0
+                return
+            
             l, a = robot.follow_path(self)
             robot.move(l, a)
         else:
@@ -528,7 +791,7 @@ class SubterraneanMapper:
             'coverage': self.realtime_fig.add_subplot(gs[1, :])
         }
 
-        title = 'Subterranean Maze Mapping\n(Click on grid map to control RED robot)'
+        title = 'Subterranean Maze Mapping (WITH DIRECTION BIAS)\n(Click on grid map to control RED robot)'
         self.realtime_fig.suptitle(title, fontsize=14, fontweight='bold')
         self.realtime_fig.canvas.mpl_connect('button_press_event', self.on_map_click)
         plt.show(block=False)
@@ -539,7 +802,6 @@ class SubterraneanMapper:
             if (self.map_bounds['x_min'] <= x <= self.map_bounds['x_max'] and
                 self.map_bounds['y_min'] <= y <= self.map_bounds['y_max']):
                 
-                # Manual Goal Setting with Path Planning
                 self.robots[0].goal = (x, y)
                 self.robots[0].manual_control = True
                 
@@ -576,7 +838,7 @@ class SubterraneanMapper:
                  self.map_bounds['y_min'], self.map_bounds['y_max']]
         ax_grid.imshow(grid_image, origin='lower', extent=extent, interpolation='nearest')
 
-        # Plot robots
+        # Plot robots with direction arrows
         for robot, color in zip(self.robots, ['red', 'green', 'blue']):
             if robot.trajectory:
                 traj = np.array(robot.trajectory)
@@ -591,6 +853,14 @@ class SubterraneanMapper:
             pos, _ = p.getBasePositionAndOrientation(robot.id)
             ax_grid.scatter(pos[0], pos[1], c=color, s=100, marker='^',
                           edgecolors='black', linewidths=1.5, zorder=5)
+            
+            # NEW: Draw exploration direction arrow
+            arrow_len = 1.5
+            ax_grid.arrow(pos[0], pos[1], 
+                         robot.exploration_direction[0] * arrow_len,
+                         robot.exploration_direction[1] * arrow_len,
+                         head_width=0.3, head_length=0.2, fc=color, ec='black',
+                         alpha=0.7, zorder=6)
 
             if robot.goal is not None:
                 ax_grid.scatter(robot.goal[0], robot.goal[1], c=color, s=150,
@@ -601,7 +871,7 @@ class SubterraneanMapper:
         ax_grid.set_ylim(self.map_bounds['y_min'] - bounds_margin, self.map_bounds['y_max'] + bounds_margin)
         ax_grid.set_aspect('equal')
         ax_grid.grid(True, alpha=0.3)
-        ax_grid.set_title('Occupancy Grid (Dotted Lines = A* Paths)')
+        ax_grid.set_title('Occupancy Grid (Arrows = Exploration Direction)')
 
         coverage = self.calculate_coverage()
         ax_grid.text(0.02, 0.98, f'Coverage: {coverage:.1f}%',
@@ -663,7 +933,7 @@ class SubterraneanMapper:
 
         ax_coverage.set_xlabel('Simulation Step')
         ax_coverage.set_ylabel('Coverage (%)')
-        ax_coverage.set_title('Coverage Progress')
+        ax_coverage.set_title('Coverage Progress (Direction Bias Enabled)')
         ax_coverage.grid(True, alpha=0.3)
         ax_coverage.set_ylim(0, 100)
         ax_coverage.set_xlim(0, max(2000, step))
@@ -674,6 +944,11 @@ class SubterraneanMapper:
 
     def run_simulation(self, steps=5000, scan_interval=10, use_gui=True, realtime_viz=True, viz_update_interval=50):
         print("Starting subterranean maze mapping simulation...")
+        print("*** DIRECTION BIAS ENABLED ***")
+        print(f"  - Direction weight: {self.direction_bias_weight}")
+        print(f"  - Size weight: {self.size_weight}")
+        print(f"  - Distance weight: {self.distance_weight}")
+        
         if steps is None:
             print("Running unlimited steps (press Ctrl+C to stop)...")
         else:
@@ -688,16 +963,15 @@ class SubterraneanMapper:
             if steps is not None and step >= steps:
                 break
 
-            # --- COORDINATION STEP (Global Planner) ---
-            # Runs every 20 steps to re-evaluate market bids
+            # COORDINATION STEP (Global Planner)
             if step % 20 == 0:
                 self.assign_global_goals()
 
-            # --- CONTROL STEP (Local Planner) ---
+            # CONTROL STEP (Local Planner)
             for robot in self.robots:
                 self.exploration_logic(robot, step)
 
-            # --- SENSING STEP ---
+            # SENSING STEP
             if step % scan_interval == 0:
                 for robot in self.robots:
                     robot.get_lidar_scan(num_rays=180, max_range=15)
@@ -736,6 +1010,7 @@ class SubterraneanMapper:
 def main():
     print("=" * 60)
     print("Multi-Robot Subterranean Maze Coverage Mapping")
+    print("IMPROVED VERSION WITH DIRECTION BIAS")
     print("=" * 60)
 
     # Maze configuration
