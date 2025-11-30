@@ -2,7 +2,9 @@
 Multi-robot coverage mapping simulation for subterranean maze environments
 Uses the MazeEnvironment class from environment_generator to create procedurally generated mazes
 
-IMPROVED VERSION: Added direction bias to reduce oscillation at intersections
+IMPROVED VERSION: 
+1. Added direction bias to reduce oscillation.
+2. FIXED LIDAR: Now handles max-range "misses" to clear free space in open areas.
 
 Architectural influences:
 1. MGG Planner: Bifurcated Local/Global state machine.
@@ -272,10 +274,17 @@ class Robot:
             hit_object_id = result[0]
             hit_fraction = result[2]
             
-            # Ignore self-collision
+            # Check if hit something
             if hit_fraction < 1.0 and hit_object_id != self.id:
                 hit_position = result[3]
-                scan_points.append((hit_position[0], hit_position[1]))
+                # Store (x, y, is_hit=True)
+                scan_points.append((hit_position[0], hit_position[1], True))
+            else:
+                # Ray maxed out - hit nothing
+                # Store (x, y, is_hit=False) at max range
+                # This allows clearing free space in open areas
+                target = ray_to[i]
+                scan_points.append((target[0], target[1], False))
 
         self.lidar_data.extend(scan_points)
         self.trajectory.append((pos[0], pos[1]))
@@ -414,9 +423,12 @@ class SubterraneanMapper:
         self.volumetric_cache = {}        # Cache to avoid recalculating
         
         # Return-to-home settings
-        self.return_home_coverage = 92.0  # Trigger return at this coverage %
+        self.return_home_coverage = 95.0  # Trigger return at this coverage %
         self.returning_home = False       # Global state: are we returning home?
         self.robots_home = set()          # Track which robots have arrived home
+        
+        # Safety margin
+        self.safety_margin = 0 # 0 cells = approx 0.25m buffer
 
     def create_robots(self):
         spawn_pos = self.env.get_spawn_position()
@@ -489,13 +501,18 @@ class SubterraneanMapper:
         self.occupancy_grid[robot_grid] = 1
         self.explored_cells.add(robot_grid)
 
-        recent_scans = robot.lidar_data[-180:] if len(robot.lidar_data) > 180 else robot.lidar_data
+        # Get recent scans (last 360 points to cover full circle)
+        recent_scans = robot.lidar_data[-360:] if len(robot.lidar_data) > 360 else robot.lidar_data
 
-        for hit_x, hit_y in recent_scans:
+        for hit_x, hit_y, is_hit in recent_scans:
             obstacle_grid = self.world_to_grid(hit_x, hit_y)
-            self.occupancy_grid[obstacle_grid] = 2
-            self.obstacle_cells.add(obstacle_grid)
+            
+            # Only mark as obstacle if it was an actual hit
+            if is_hit:
+                self.occupancy_grid[obstacle_grid] = 2
+                self.obstacle_cells.add(obstacle_grid)
 
+            # Trace line for BOTH hits and misses (clears free space)
             self.bresenham_line(robot_grid[0], robot_grid[1],
                                obstacle_grid[0], obstacle_grid[1])
 
@@ -610,10 +627,11 @@ class SubterraneanMapper:
         
         # Pre-compute inflated obstacles (1-cell buffer around walls)
         inflated_obstacles = set(self.obstacle_cells)
-        for obs in self.obstacle_cells:
-            for dx in [-1, 0, 1]:
-                for dy in [-1, 0, 1]:
-                    inflated_obstacles.add((obs[0] + dx, obs[1] + dy))
+        if self.safety_margin > 0:
+            for obs in self.obstacle_cells:
+                for dx in range(-self.safety_margin, self.safety_margin + 1):
+                    for dy in range(-self.safety_margin, self.safety_margin + 1):
+                        inflated_obstacles.add((obs[0] + dx, obs[1] + dy))
         
         def is_safe(cell, check_buffer=True):
             """Check if cell is safe to traverse."""
@@ -642,6 +660,8 @@ class SubterraneanMapper:
                 cardinal2 = (current[0], current[1] + dy)  # Vertical neighbor
                 
                 # Both cardinal directions must be free (not obstacles)
+                # Note: We check if they are obstacles, not if they are safe (free space)
+                # It's okay to cut corners of "unknown" space, but not walls.
                 if cardinal1 in self.obstacle_cells or cardinal2 in self.obstacle_cells:
                     return False
             return True
