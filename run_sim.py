@@ -414,7 +414,7 @@ class SubterraneanMapper:
         self.volumetric_cache = {}        # Cache to avoid recalculating
         
         # Return-to-home settings
-        self.return_home_coverage = 95.0  # Trigger return at this coverage %
+        self.return_home_coverage = 92.0  # Trigger return at this coverage %
         self.returning_home = False       # Global state: are we returning home?
         self.robots_home = set()          # Track which robots have arrived home
 
@@ -990,8 +990,44 @@ class SubterraneanMapper:
             l, a = robot.follow_path(self)
             robot.move(l, a)
         else:
-            # Local Scanning Mode: Spin slowly to build map if no goal
-            robot.move(0.0, 0.5)
+            # If returning home but lost goal, re-plan path home
+            if robot.mode == 'RETURNING_HOME':
+                self.plan_return_path_for_robot(robot)
+                if robot.goal:
+                    l, a = robot.follow_path(self)
+                    robot.move(l, a)
+                else:
+                    robot.move(0.0, 0.5)  # Spin if can't plan
+            else:
+                # Local Scanning Mode: Spin slowly to build map if no goal
+                robot.move(0.0, 0.5)
+
+    def plan_return_path_for_robot(self, robot):
+        """Plan a path home for a single robot."""
+        # Plan path home using global graph
+        home_path = robot.plan_path_on_global_graph(tuple(robot.home_position))
+        
+        if home_path and len(home_path) > 1:
+            # Convert world path to grid path for follow_path compatibility
+            robot.goal = home_path[-1]  # Final destination
+            robot.path = []
+            
+            # Convert each waypoint to grid coordinates
+            for waypoint in home_path[1:]:  # Skip first point (current position)
+                grid_pos = self.world_to_grid(waypoint[0], waypoint[1])
+                robot.path.append(grid_pos)
+            
+            robot.reset_stuck_state()
+        else:
+            # Fallback: plan direct A* path if global graph path failed
+            pos, _ = p.getBasePositionAndOrientation(robot.id)
+            start_grid = self.world_to_grid(pos[0], pos[1])
+            home_grid = self.world_to_grid(robot.home_position[0], robot.home_position[1])
+            
+            robot.path = self.plan_path_astar(start_grid, home_grid)
+            if robot.path:
+                robot.goal = tuple(robot.home_position)
+                robot.reset_stuck_state()
 
     def trigger_return_home(self):
         """
@@ -999,30 +1035,8 @@ class SubterraneanMapper:
         """
         for robot in self.robots:
             robot.mode = 'RETURNING_HOME'
-            
-            # Plan path home using global graph
-            home_path = robot.plan_path_on_global_graph(tuple(robot.home_position))
-            
-            if home_path and len(home_path) > 1:
-                # Convert world path to grid path for follow_path compatibility
-                robot.goal = home_path[-1]  # Final destination
-                robot.path = []
-                
-                # Convert each waypoint to grid coordinates
-                for waypoint in home_path[1:]:  # Skip first point (current position)
-                    grid_pos = self.world_to_grid(waypoint[0], waypoint[1])
-                    robot.path.append(grid_pos)
-                
-                print(f"Robot {robot.id}: Planned return path with {len(robot.path)} waypoints")
-            else:
-                # Fallback: plan direct A* path if global graph path failed
-                pos, _ = p.getBasePositionAndOrientation(robot.id)
-                start_grid = self.world_to_grid(pos[0], pos[1])
-                home_grid = self.world_to_grid(robot.home_position[0], robot.home_position[1])
-                
-                robot.path = self.plan_path_astar(start_grid, home_grid)
-                robot.goal = tuple(robot.home_position)
-                print(f"Robot {robot.id}: Using A* fallback for return path")
+            self.plan_return_path_for_robot(robot)
+            print(f"Robot {robot.id}: Returning home with {len(robot.path)} waypoints")
 
     def calculate_coverage(self):
         if self.total_free_cells == 0:
