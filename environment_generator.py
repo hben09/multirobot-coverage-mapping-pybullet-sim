@@ -136,10 +136,6 @@ class ProceduralEnvironment:
         # Ensure path to start
         self.maze_grid[1, entrance_x] = 0
 
-        # Optionally create an exit on the opposite side
-        exit_x = random.choice(range(1, grid_width - 1, 2))
-        self.maze_grid[grid_height - 1, exit_x] = 0
-
         # Add connectivity
         self._add_loops(0.1)
 
@@ -236,11 +232,11 @@ class ProceduralEnvironment:
                 next_y_end = y_end + wall_gap
 
                 if i % 2 == 0:
-                    # Connect on right
-                    self.maze_grid[next_y_start:next_y_end, -3:-1] = 0
+                    # Connect on right (stay away from perimeter wall)
+                    self.maze_grid[next_y_start:next_y_end, -4:-2] = 0
                 else:
-                    # Connect on left
-                    self.maze_grid[next_y_start:next_y_end, 1:3] = 0
+                    # Connect on left (stay away from perimeter wall)
+                    self.maze_grid[next_y_start:next_y_end, 2:4] = 0
 
         # Create entrance connecting to the first strip
         entrance_x = grid_width // 2
@@ -262,18 +258,24 @@ class ProceduralEnvironment:
             w = random.randint(3, 8)
             h = random.randint(3, 8)
             # Random pos (ensure odd coords for alignment)
-            x = random.randint(1, (grid_width - w - 1) // 2) * 2 + 1
-            y = random.randint(1, (grid_height - h - 1) // 2) * 2 + 1
+            # Keep rooms at least 1 cell away from perimeter walls
+            x = random.randint(1, max(1, (grid_width - w - 2) // 2)) * 2 + 1
+            y = random.randint(1, max(1, (grid_height - h - 2) // 2)) * 2 + 1
 
             new_room = {'x': x, 'y': y, 'w': w, 'h': h}
 
-            # Simple overlap check
+            # Check that room doesn't touch perimeter walls
             failed = False
-            for other in rooms:
-                if (x < other['x'] + other['w'] and x + w > other['x'] and
-                    y < other['y'] + other['h'] and y + h > other['y']):
-                    failed = True
-                    break
+            if x <= 0 or y <= 0 or x + w >= grid_width - 1 or y + h >= grid_height - 1:
+                failed = True
+
+            # Simple overlap check with other rooms
+            if not failed:
+                for other in rooms:
+                    if (x < other['x'] + other['w'] and x + w > other['x'] and
+                        y < other['y'] + other['h'] and y + h > other['y']):
+                        failed = True
+                        break
 
             if not failed:
                 # Carve room
@@ -321,13 +323,19 @@ class ProceduralEnvironment:
 
     def _carve_h_corridor(self, x1, x2, y):
         """Carve a horizontal corridor between two x coordinates at a given y."""
+        # Keep corridor away from perimeter walls
+        grid_height, grid_width = self.maze_grid.shape
         for x in range(min(x1, x2), max(x1, x2) + 1):
-            self.maze_grid[y, x] = 0
+            if 0 < y < grid_height - 1 and 0 < x < grid_width - 1:
+                self.maze_grid[y, x] = 0
 
     def _carve_v_corridor(self, y1, y2, x):
         """Carve a vertical corridor between two y coordinates at a given x."""
+        # Keep corridor away from perimeter walls (except for entrance at y=0)
+        grid_height, grid_width = self.maze_grid.shape
         for y in range(min(y1, y2), max(y1, y2) + 1):
-            self.maze_grid[y, x] = 0
+            if 0 < y < grid_height - 1 and 0 < x < grid_width - 1:
+                self.maze_grid[y, x] = 0
 
     def _keep_largest_component(self, target_val=0):
         """Keep only the largest connected component of target_val, fill others."""
