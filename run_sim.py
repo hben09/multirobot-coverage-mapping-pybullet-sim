@@ -455,13 +455,13 @@ class Robot:
         angle_diff = desired_angle - yaw
         angle_diff = np.arctan2(np.sin(angle_diff), np.cos(angle_diff))
 
-        # Control Limits (User Requested: 4.0 m/s)
-        linear_vel = min(4.0, distance * 2.0)
+        # Control Limits (Increased for faster exploration)
+        linear_vel = min(8.0, distance * 2.0)  # Max 8.0 m/s (was 4.0)
         angular_vel = np.clip(angle_diff * 4.0, -4.0, 4.0)
-        
-        # Slow down if turning sharply
+
+        # Slow down if turning sharply (reduced penalty for faster turns)
         if abs(angle_diff) > 0.5:
-            linear_vel *= 0.1
+            linear_vel *= 0.3  # 30% speed when turning (was 10%)
 
         return linear_vel, angular_vel
 
