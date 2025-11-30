@@ -2,9 +2,11 @@
 Multi-robot coverage mapping simulation for procedurally generated environments
 Uses the ProceduralEnvironment class from environment_generator to create mazes, caves, tunnels, and rooms
 
-IMPROVED VERSION:
-1. Added direction bias to reduce oscillation.
-2. FIXED LIDAR: Now handles max-range "misses" to clear free space in open areas.
+OPTIMIZED VERSION:
+1. "Uncapped" Simulation Speed (removed time.sleep).
+2. Vectorized Visualization (using numpy masks instead of loops).
+3. Increased Robot Velocity.
+4. Optimized Default Settings.
 
 Architectural influences:
 1. MGG Planner: Bifurcated Local/Global state machine.
@@ -353,12 +355,13 @@ class Robot:
         angle_diff = np.arctan2(np.sin(angle_diff), np.cos(angle_diff))
 
         # Control Limits (Increased for faster exploration)
-        linear_vel = min(8.0, distance * 2.0)  # Max 8.0 m/s (was 4.0)
+        # OPTIMIZED: Increased max speed from 8.0 to 12.0
+        linear_vel = min(12.0, distance * 2.5)  
         angular_vel = np.clip(angle_diff * 4.0, -4.0, 4.0)
 
         # Slow down if turning sharply (reduced penalty for faster turns)
         if abs(angle_diff) > 0.5:
-            linear_vel *= 0.3  # 30% speed when turning (was 10%)
+            linear_vel *= 0.3  # 30% speed when turning
 
         return linear_vel, angular_vel
 
@@ -386,13 +389,10 @@ class CoverageMapper:
         self.create_robots()
 
         self.grid_resolution = 0.5
-        self.occupancy_grid = {}  # 1=Free, 2=Obstacle
-        self.explored_cells = set()
-        self.obstacle_cells = set()
-
+        
+        # Grid dimensions for vectorized array
         block_physical_size = self.env.cell_size / 2.0
         half_block = block_physical_size / 2.0
-        
         maze_world_width = self.env.maze_grid.shape[1] * block_physical_size
         maze_world_height = self.env.maze_grid.shape[0] * block_physical_size
         
@@ -402,6 +402,19 @@ class CoverageMapper:
             'y_min': -half_block,
             'y_max': maze_world_height - half_block
         }
+        
+        # Calculate grid size for numpy array
+        self.grid_width = int((self.map_bounds['x_max'] - self.map_bounds['x_min']) / self.grid_resolution)
+        self.grid_height = int((self.map_bounds['y_max'] - self.map_bounds['y_min']) / self.grid_resolution)
+        
+        # Data Structures
+        self.occupancy_grid = {}  # Sparse dict (1=Free, 2=Obstacle) - Kept for legacy compatibility
+        
+        # OPTIMIZATION: Numpy array for fast visualization (0=Unknown, 1=Free, 2=Obstacle)
+        self.occupancy_grid_numpy = np.zeros((self.grid_height, self.grid_width), dtype=np.int8)
+        
+        self.explored_cells = set()
+        self.obstacle_cells = set()
 
         self.scale_factor = block_physical_size / self.grid_resolution
         ground_truth_zeros = np.sum(self.env.maze_grid == 0)
@@ -520,6 +533,11 @@ class CoverageMapper:
         robot_grid = self.world_to_grid(pos[0], pos[1])
 
         self.occupancy_grid[robot_grid] = 1
+        
+        # OPTIMIZATION: Update numpy array
+        if 0 <= robot_grid[0] < self.grid_width and 0 <= robot_grid[1] < self.grid_height:
+             self.occupancy_grid_numpy[robot_grid[1], robot_grid[0]] = 1
+             
         self.explored_cells.add(robot_grid)
 
         # Get recent scans (last 360 points to cover full circle)
@@ -532,6 +550,10 @@ class CoverageMapper:
             if is_hit:
                 self.occupancy_grid[obstacle_grid] = 2
                 self.obstacle_cells.add(obstacle_grid)
+                
+                # OPTIMIZATION: Update numpy array
+                if 0 <= obstacle_grid[0] < self.grid_width and 0 <= obstacle_grid[1] < self.grid_height:
+                    self.occupancy_grid_numpy[obstacle_grid[1], obstacle_grid[0]] = 2
 
             # Trace line for BOTH hits and misses (clears free space)
             self.bresenham_line(robot_grid[0], robot_grid[1],
@@ -547,10 +569,19 @@ class CoverageMapper:
         x, y = x0, y0
         while True:
             cell = (x, y)
+            
+            # Check for existing obstacle in numpy array to avoid dictionary lookup (faster)
+            is_obstacle = False
+            if 0 <= x < self.grid_width and 0 <= y < self.grid_height:
+                 if self.occupancy_grid_numpy[y, x] == 2:
+                     is_obstacle = True
+            
             # Don't overwrite obstacles with free space
-            if cell not in self.obstacle_cells:
+            if not is_obstacle:
                 self.occupancy_grid[cell] = 1
                 self.explored_cells.add(cell)
+                if 0 <= x < self.grid_width and 0 <= y < self.grid_height:
+                    self.occupancy_grid_numpy[y, x] = 1
 
             if x == x1 and y == y1:
                 break
@@ -1210,19 +1241,18 @@ class CoverageMapper:
         for ax in self.realtime_axes.values():
             ax.clear()
 
-        # Update occupancy grid
+        # Update occupancy grid (OPTIMIZED: Vectorized numpy update)
         ax_grid = self.realtime_axes['grid']
-        grid_x = int((self.map_bounds['x_max'] - self.map_bounds['x_min']) / self.grid_resolution)
-        grid_y = int((self.map_bounds['y_max'] - self.map_bounds['y_min']) / self.grid_resolution)
-        grid_image = np.ones((grid_y, grid_x, 3)) * 0.7
-
-        for cell, value in self.occupancy_grid.items():
-            gx, gy = cell
-            if 0 <= gx < grid_x and 0 <= gy < grid_y:
-                if value == 1:
-                    grid_image[gy, gx] = [1, 1, 1]
-                elif value == 2:
-                    grid_image[gy, gx] = [0, 0, 0]
+        
+        # Create RGB image from numpy state array directly (much faster than looping dict)
+        # 0=Unknown(0.7), 1=Free(1.0), 2=Obstacle(0.0)
+        grid_image = np.ones((self.grid_height, self.grid_width, 3)) * 0.7
+        
+        mask_free = (self.occupancy_grid_numpy == 1)
+        mask_obs = (self.occupancy_grid_numpy == 2)
+        
+        grid_image[mask_free] = [1, 1, 1]
+        grid_image[mask_obs] = [0, 0, 0]
 
         extent = [self.map_bounds['x_min'], self.map_bounds['x_max'],
                  self.map_bounds['y_min'], self.map_bounds['y_max']]
@@ -1382,19 +1412,11 @@ class CoverageMapper:
                        viz_update_interval=50, viz_mode='realtime', log_path='./logs'):
         """
         Run the simulation with configurable visualization and logging.
-        
-        Args:
-            steps: Number of simulation steps (None for unlimited)
-            scan_interval: Steps between LIDAR scans
-            use_gui: Whether to show PyBullet 3D window
-            realtime_viz: (DEPRECATED) Use viz_mode instead
-            viz_update_interval: Steps between visualization/logging updates
-            viz_mode: 'realtime' | 'logging' | 'both' | 'none'
-            log_path: Directory to save log files
         """
         print("Starting multi-robot coverage mapping simulation...")
         print("*** PERFORMANCE MODE: INCREMENTAL FRONTIERS + OCTILE HEURISTIC ***")
         print("*** DIRECTION BIAS + VOLUMETRIC GAIN + CROWDING PENALTY ENABLED ***")
+        print("*** SPEED UNLOCKED: RUNNING AT MAX CPU SPEED (NO SLEEP) ***")
         print(f"  - Direction weight: {self.direction_bias_weight}")
         print(f"  - Volumetric weight: {self.volumetric_weight}")
         print(f"  - Crowding Penalty: {self.crowding_penalty_weight} (Radius: {self.crowding_radius}m)")
@@ -1434,8 +1456,21 @@ class CoverageMapper:
                 print("\n*** ALL ROBOTS RETURNED HOME ***")
                 break
 
+            # Check if any robot is idle (needs a goal)
+            # Triggers replanning immediately if a robot is sitting around spinning
+            any_idle = False
+            for r in self.robots:
+                if r.goal is None and not r.manual_control and r.mode != 'HOME':
+                    any_idle = True
+                    break
+
             # COORDINATION STEP (Global Planner)
-            if step % 200 == 0:
+            # Run if:
+            # 1. Periodic check (every 50 steps is better than 200 for responsiveness)
+            # 2. OR if we have idle robots (with a small cooldown of 10 steps to prevent thrashing)
+            should_replan = (step % 50 == 0) or (any_idle and step % 10 == 0)
+
+            if should_replan:
                 coverage = self.calculate_coverage()
                 
                 # Check if we should trigger return-to-home
@@ -1489,7 +1524,9 @@ class CoverageMapper:
             p.stepSimulation()
 
             if use_gui:
-                time.sleep(1./240.)
+                # OPTIMIZATION: Removed time.sleep to run at max CPU speed
+                # time.sleep(1./240.) 
+                pass
 
             if step % 200 == 0:
                 coverage = self.calculate_coverage()
@@ -1813,7 +1850,8 @@ def main():
             scan_interval=10,
             use_gui=use_gui,
             viz_mode=viz_mode,
-            viz_update_interval=50,
+            # OPTIMIZATION: Increased update interval for speed
+            viz_update_interval=100, 
             log_path='./logs'
         )
 
