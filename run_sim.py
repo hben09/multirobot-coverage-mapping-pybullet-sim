@@ -1,6 +1,6 @@
 """
 Multi-robot coverage mapping simulation for subterranean maze environments
-Uses the MazeEnvironment class from environment_generator to create procedurally generated mazes
+Uses the ProceduralEnvironment class from environment_generator to create procedurally generated mazes
 
 IMPROVED VERSION: 
 1. Added direction bias to reduce oscillation.
@@ -22,7 +22,7 @@ import os
 import math
 import heapq
 from datetime import datetime
-from environment_generator import MazeEnvironment
+from environment_generator import ProceduralEnvironment
 
 # Import the Robot class and MultiRobotMapper from the original file
 import sys
@@ -472,7 +472,7 @@ class SubterraneanMapper:
     def __init__(self, use_gui=True, maze_size=(10, 10), cell_size=2.0, env_seed=None, env_type='maze', num_robots=3):
         self.num_robots = num_robots
         
-        self.env = MazeEnvironment(
+        self.env = ProceduralEnvironment(
             maze_size=maze_size,
             cell_size=cell_size,
             wall_height=2.5,

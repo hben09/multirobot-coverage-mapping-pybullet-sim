@@ -14,8 +14,8 @@ import pybullet as p
 import pybullet_data
 
 
-class MazeEnvironment:
-    """Generates and manages a random maze environment in PyBullet."""
+class ProceduralEnvironment:
+    """Generates and manages procedural environments (mazes, caves, tunnels, rooms) in PyBullet."""
 
     def __init__(
         self,
@@ -359,7 +359,6 @@ class MazeEnvironment:
 
         # Sort by size (largest first)
         components.sort(key=len, reverse=True)
-        largest = components[0]
 
         # Fill all other components with 1 (wall)
         for comp in components[1:]:
@@ -744,28 +743,18 @@ def main():
     print("  5. Rooms (dungeon with connected chambers)")
     env_type_input = input("Choose environment type (1-5, default=1): ").strip()
 
-    if env_type_input == '2':
-        env_type = 'blank_box'
-    elif env_type_input == '3':
-        env_type = 'cave'
-    elif env_type_input == '4':
-        env_type = 'tunnel'
-    elif env_type_input == '5':
-        env_type = 'rooms'
-    else:
-        env_type = 'maze'
+    env_types = {'2': 'blank_box', '3': 'cave', '4': 'tunnel', '5': 'rooms'}
+    env_type = env_types.get(env_type_input, 'maze')
 
     # 5. GUI Toggle
-    gui_input = input("Show PyBullet 3D window? (y/n, default=y): ").strip().lower()
-    # Default to True for the generator visualization
-    use_gui = gui_input != 'n'
+    use_gui = input("Show PyBullet 3D window? (y/n, default=y): ").strip().lower() != 'n'
 
     # --- Environment Creation ---
 
     print(f"\nInitializing {maze_size}x{maze_size} {env_type}...")
 
     # Create maze environment
-    env = MazeEnvironment(
+    env = ProceduralEnvironment(
         maze_size=(maze_size, maze_size),
         cell_size=cell_size,
         wall_height=2.5,
