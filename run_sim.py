@@ -1621,19 +1621,18 @@ class SubterraneanMapper:
         if do_logging:
             self.logger.log_frame(step, self)  # Log final state
             log_filepath = self.logger.save()
-            
-            # Automatically generate MP4 video
-            print("\nGenerating MP4 video from log...")
-            video_path = log_filepath.replace('.npz', '.mp4')
-            self.generate_video_from_log(log_filepath, video_path)
-            
+
             print(f"\nTo replay this simulation interactively, run:")
             print(f"  python playback.py {log_filepath}")
+
+            return log_filepath  # Return log path for optional video rendering
 
         print("\nSimulation complete!")
         final_coverage = self.calculate_coverage()
         print(f"Final Coverage: {final_coverage:.2f}%")
         print(f"Explored Free Cells: {int(final_coverage/100 * self.total_free_cells)}/{int(self.total_free_cells)}")
+
+        return None  # No log file if not logging
 
     def generate_video_from_log(self, log_filepath, video_path, fps=30, dpi=100):
         """Generate MP4 video from a simulation log file."""
@@ -1921,8 +1920,10 @@ def main():
         num_robots=num_robots
     )
 
+    log_filepath = None
+
     try:
-        mapper.run_simulation(
+        log_filepath = mapper.run_simulation(
             steps=max_steps,
             scan_interval=10,
             use_gui=use_gui,
@@ -1933,20 +1934,30 @@ def main():
 
     except KeyboardInterrupt:
         print("\nSimulation interrupted by user")
-        # Save log and generate video if logging was enabled
+        # Save log if logging was enabled
         if mapper.logger is not None and len(mapper.logger.frames) > 0:
             print("Saving partial log...")
             log_filepath = mapper.logger.save()
-            
-            # Generate video from partial log
-            print("\nGenerating MP4 video from partial log...")
-            video_path = log_filepath.replace('.npz', '.mp4')
-            mapper.generate_video_from_log(log_filepath, video_path)
+            print(f"\nTo replay this simulation interactively, run:")
+            print(f"  python playback.py {log_filepath}")
     finally:
         if mapper.realtime_fig is not None:
             plt.close(mapper.realtime_fig)
         mapper.cleanup()
         print("PyBullet disconnected")
+
+    # Prompt for video rendering if a log file was created
+    if log_filepath is not None:
+        render_input = input("\nRender video from log? (y/n, default=n): ").strip().lower()
+        if render_input == 'y':
+            try:
+                from video_renderer_opencv import render_video_from_log
+                print("\nRendering video with OpenCV (fast parallel renderer)...")
+                render_video_from_log(log_filepath)
+            except ImportError:
+                print("Warning: video_renderer_opencv.py not found, skipping video rendering")
+            except Exception as e:
+                print(f"Error rendering video: {e}")
 
 
 if __name__ == "__main__":
