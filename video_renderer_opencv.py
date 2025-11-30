@@ -6,13 +6,30 @@ It renders frames ~10-50x faster and supports parallel processing.
 
 Usage:
     from video_renderer_opencv import render_video_from_log
-    render_video_from_log('logs/sim_log_xxx.npz', 'output.mp4', num_workers=4)
+
+    # Input: 'logs/sim_log_xxx.npz' -> Output: 'logs/sim_log_xxx.mp4' at 30fps
+    render_video_from_log('logs/sim_log_xxx.npz')
+
+    # Control parallelism (4 workers)
+    render_video_from_log('logs/sim_log_xxx.npz', num_workers=4)
+
+    # Sequential (no parallelism)
+    render_video_from_log('logs/sim_log_xxx.npz', num_workers=1)
+
+CLI Usage:
+    python video_renderer_opencv.py logs/sim_log_xxx.npz
+    python video_renderer_opencv.py logs/sim_log_xxx.npz -j 4
+
+Output:
+    - Videos are always saved to a 'logs' folder
+    - If input is 'logs/file.npz', output is 'logs/file.mp4'
+    - If input is 'file.npz', output is 'logs/file.mp4'
 """
 
 import cv2
 import numpy as np
 import multiprocessing
-from multiprocessing import Pool, cpu_count
+from multiprocessing import Pool
 import os
 import sys
 import time
@@ -501,18 +518,38 @@ def print_progress(current, total, start_time, bar_length=40):
     print(f'\r  [{bar}] {current}/{total} ({progress*100:.0f}%) | {fps:.1f} fps | ETA: {eta:.0f}s    ', end='', flush=True)
 
 
-def render_video_from_log(log_filepath, output_path, fps=30, output_size=(1280, 960), num_workers=None):
+def render_video_from_log(log_filepath, num_workers=None):
     """
     Render a simulation log to an MP4 video using OpenCV.
-    
+
     Args:
         log_filepath: Path to the .npz log file
-        output_path: Path for the output .mp4 file
-        fps: Frames per second for the video
-        output_size: (width, height) tuple for the output video
-        num_workers: Number of parallel workers (None = use all CPUs, 1 = sequential)
+        num_workers: Number of parallel workers (default: 4, use 1 for sequential)
+
+    Returns:
+        Path to the output video file
     """
+    # Auto-generate output path - save to logs folder
+    log_basename = os.path.basename(log_filepath).replace('.npz', '.mp4')
+    log_dir = os.path.dirname(log_filepath)
+
+    # If log is already in a 'logs' directory, use that; otherwise create 'logs' subdirectory
+    if os.path.basename(log_dir) == 'logs':
+        logs_dir = log_dir
+    else:
+        logs_dir = os.path.join(log_dir or '.', 'logs')
+
+    # Create logs directory if it doesn't exist
+    os.makedirs(logs_dir, exist_ok=True)
+
+    output_path = os.path.join(logs_dir, log_basename)
+
+    # Fixed parameters for consistency
+    fps = 30
+    output_size = (1280, 960)
+
     print(f"Loading log file: {log_filepath}")
+    print(f"Output will be saved to: {output_path}")
     
     # Load log data (only for main process to get metadata/length)
     data = np.load(log_filepath, allow_pickle=True)
@@ -535,9 +572,9 @@ def render_video_from_log(log_filepath, output_path, fps=30, output_size=(1280, 
         raise RuntimeError(f"Failed to open video writer for {output_path}")
     
     start_time = time.time()
-    
+
     if num_workers is None:
-        num_workers = max(1, cpu_count() - 1)
+        num_workers = 4
     
     # On Windows, multiprocessing can be problematic - offer sequential fallback
     use_parallel = num_workers > 1
@@ -598,21 +635,14 @@ def render_video_from_log(log_filepath, output_path, fps=30, output_size=(1280, 
 # ============================================================================
 # Convenience function for drop-in replacement
 # ============================================================================
-def generate_video_from_log_opencv(log_filepath, video_path, fps=30, dpi=100):
+def generate_video_from_log_opencv(log_filepath, video_path=None, fps=30, dpi=100, num_workers=None):
     """
     Drop-in replacement for SubterraneanMapper.generate_video_from_log().
-    
-    The 'dpi' parameter is ignored (kept for API compatibility).
+
+    The 'video_path', 'fps', and 'dpi' parameters are ignored (kept for API compatibility).
+    Output will be the same as log_filepath with .mp4 extension at 30fps.
     """
-    # Map dpi to approximate resolution
-    if dpi >= 150:
-        output_size = (1920, 1440)
-    elif dpi >= 100:
-        output_size = (1280, 960)
-    else:
-        output_size = (960, 720)
-    
-    return render_video_from_log(log_filepath, video_path, fps=fps, output_size=output_size)
+    return render_video_from_log(log_filepath, num_workers=num_workers)
 
 
 # ============================================================================
@@ -621,28 +651,17 @@ def generate_video_from_log_opencv(log_filepath, video_path, fps=30, dpi=100):
 if __name__ == "__main__":
     # Required for Windows multiprocessing support
     multiprocessing.freeze_support()
-    
+
     import argparse
-    
-    parser = argparse.ArgumentParser(description="Render simulation log to MP4 video using OpenCV")
-    parser.add_argument("log_file", help="Path to the .npz log file")
-    parser.add_argument("-o", "--output", help="Output video path (default: same as input with .mp4)")
-    parser.add_argument("--fps", type=int, default=30, help="Frames per second (default: 30)")
-    parser.add_argument("--width", type=int, default=1280, help="Output width (default: 1280)")
-    parser.add_argument("--height", type=int, default=960, help="Output height (default: 960)")
-    parser.add_argument("-j", "--jobs", type=int, default=None, 
-                        help="Number of parallel workers (default: auto, use 1 for sequential)")
-    
-    args = parser.parse_args()
-    
-    output_path = args.output
-    if output_path is None:
-        output_path = args.log_file.replace('.npz', '_opencv.mp4')
-    
-    render_video_from_log(
-        args.log_file,
-        output_path,
-        fps=args.fps,
-        output_size=(args.width, args.height),
-        num_workers=args.jobs
+
+    parser = argparse.ArgumentParser(
+        description="Render simulation log to MP4 video using OpenCV",
+        epilog="Output will be saved as <log_file>.mp4 at 30fps with 1280x960 resolution"
     )
+    parser.add_argument("log_file", help="Path to the .npz log file")
+    parser.add_argument("-j", "--jobs", type=int, default=None,
+                        help="Number of parallel workers (default: auto, use 1 for sequential)")
+
+    args = parser.parse_args()
+
+    render_video_from_log(args.log_file, num_workers=args.jobs)
