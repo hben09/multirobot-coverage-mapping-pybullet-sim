@@ -38,18 +38,25 @@ class Robot:
         self.goal = None
         self.path = []  # List of grid waypoints from A*
         self.manual_control = False
-        self.mode = 'IDLE'
+        self.mode = 'IDLE'  # IDLE, EXPLORING, RETURNING_HOME
         
-        # NEW: Direction tracking for exploration bias
+        # Direction tracking for exploration bias
         self.exploration_direction = np.array([1.0, 0.0])  # Initial heading (east)
         self.direction_history = []  # Track recent movement directions
         self.direction_smoothing_window = 10  # Number of samples to average
         
-        # NEW: Stuck detection
+        # Stuck detection
         self.stuck_counter = 0
         self.last_position = np.array(position[:2])
         self.goal_attempts = 0
         self.max_goal_attempts = 3  # Give up after 3 failed attempts to reach a goal
+        
+        # Global graph for navigation
+        self.home_position = np.array(position[:2])  # Remember start position
+        self.global_graph_nodes = [tuple(position[:2])]  # List of (x, y) waypoints
+        self.global_graph_edges = []  # List of (node_idx1, node_idx2) connections
+        self.last_graph_node_idx = 0  # Index of last node added to graph
+        self.waypoint_spacing = 3.0  # Meters between waypoints
 
     def update_exploration_direction(self):
         """
@@ -111,6 +118,130 @@ class Robot:
         self.stuck_counter = 0
         pos, _ = p.getBasePositionAndOrientation(self.id)
         self.last_position = np.array([pos[0], pos[1]])
+
+    def update_global_graph(self):
+        """
+        Add current position to global graph if far enough from existing nodes.
+        Creates edges to connect new nodes to the graph.
+        """
+        pos, _ = p.getBasePositionAndOrientation(self.id)
+        current_pos = (pos[0], pos[1])
+        
+        # Check distance to all existing nodes
+        min_dist = float('inf')
+        nearest_node_idx = 0
+        
+        for i, node in enumerate(self.global_graph_nodes):
+            dist = np.sqrt((current_pos[0] - node[0])**2 + (current_pos[1] - node[1])**2)
+            if dist < min_dist:
+                min_dist = dist
+                nearest_node_idx = i
+        
+        # Only add new node if far enough from all existing nodes
+        if min_dist >= self.waypoint_spacing:
+            new_node_idx = len(self.global_graph_nodes)
+            self.global_graph_nodes.append(current_pos)
+            
+            # Connect to the last node we were at (maintains path continuity)
+            self.global_graph_edges.append((self.last_graph_node_idx, new_node_idx))
+            
+            # Also connect to nearest node if different (creates shortcuts)
+            if nearest_node_idx != self.last_graph_node_idx:
+                edge = (nearest_node_idx, new_node_idx)
+                reverse_edge = (new_node_idx, nearest_node_idx)
+                if edge not in self.global_graph_edges and reverse_edge not in self.global_graph_edges:
+                    self.global_graph_edges.append(edge)
+            
+            self.last_graph_node_idx = new_node_idx
+        else:
+            # Update last node to nearest if we're close to an existing node
+            self.last_graph_node_idx = nearest_node_idx
+
+    def plan_path_on_global_graph(self, target_pos):
+        """
+        Plan a path on the global graph to reach target_pos.
+        Uses Dijkstra's algorithm on the graph.
+        
+        Returns: List of (x, y) waypoints to follow
+        """
+        if len(self.global_graph_nodes) < 2:
+            return [target_pos]
+        
+        # Find nearest node to current position
+        pos, _ = p.getBasePositionAndOrientation(self.id)
+        current_pos = (pos[0], pos[1])
+        
+        start_node_idx = 0
+        min_dist = float('inf')
+        for i, node in enumerate(self.global_graph_nodes):
+            dist = np.sqrt((current_pos[0] - node[0])**2 + (current_pos[1] - node[1])**2)
+            if dist < min_dist:
+                min_dist = dist
+                start_node_idx = i
+        
+        # Find nearest node to target
+        goal_node_idx = 0
+        min_dist = float('inf')
+        for i, node in enumerate(self.global_graph_nodes):
+            dist = np.sqrt((target_pos[0] - node[0])**2 + (target_pos[1] - node[1])**2)
+            if dist < min_dist:
+                min_dist = dist
+                goal_node_idx = i
+        
+        # Build adjacency list
+        adjacency = {i: [] for i in range(len(self.global_graph_nodes))}
+        for edge in self.global_graph_edges:
+            n1, n2 = edge
+            # Calculate edge weight (distance)
+            p1 = self.global_graph_nodes[n1]
+            p2 = self.global_graph_nodes[n2]
+            weight = np.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
+            adjacency[n1].append((n2, weight))
+            adjacency[n2].append((n1, weight))  # Undirected graph
+        
+        # Dijkstra's algorithm
+        distances = {i: float('inf') for i in range(len(self.global_graph_nodes))}
+        distances[start_node_idx] = 0
+        came_from = {start_node_idx: None}
+        
+        frontier = [(0, start_node_idx)]
+        visited = set()
+        
+        while frontier:
+            current_dist, current_node = heapq.heappop(frontier)
+            
+            if current_node in visited:
+                continue
+            visited.add(current_node)
+            
+            if current_node == goal_node_idx:
+                break
+            
+            for neighbor, weight in adjacency[current_node]:
+                if neighbor in visited:
+                    continue
+                new_dist = current_dist + weight
+                if new_dist < distances[neighbor]:
+                    distances[neighbor] = new_dist
+                    came_from[neighbor] = current_node
+                    heapq.heappush(frontier, (new_dist, neighbor))
+        
+        # Reconstruct path
+        if goal_node_idx not in came_from:
+            return [target_pos]  # No path found, just go directly
+        
+        path = []
+        current = goal_node_idx
+        while current is not None:
+            path.append(self.global_graph_nodes[current])
+            current = came_from.get(current)
+        path.reverse()
+        
+        # Add final target position if not at a node
+        if path and np.sqrt((path[-1][0] - target_pos[0])**2 + (path[-1][1] - target_pos[1])**2) > 0.5:
+            path.append(target_pos)
+        
+        return path
 
     def get_lidar_scan(self, num_rays=360, max_range=10):
         """Simulate lidar by casting rays in 360 degrees"""
@@ -281,6 +412,11 @@ class SubterraneanMapper:
         self.volumetric_num_rays = 36     # Number of rays to cast
         self.volumetric_max_range = 8.0   # Max range for ray casting (meters)
         self.volumetric_cache = {}        # Cache to avoid recalculating
+        
+        # Return-to-home settings
+        self.return_home_coverage = 95.0  # Trigger return at this coverage %
+        self.returning_home = False       # Global state: are we returning home?
+        self.robots_home = set()          # Track which robots have arrived home
 
     def create_robots(self):
         spawn_pos = self.env.get_spawn_position()
@@ -830,6 +966,11 @@ class SubterraneanMapper:
             l, a = robot.follow_path(self) 
             robot.move(l, a)
             return
+        
+        # Don't move if already home
+        if robot.mode == 'HOME':
+            robot.move(0.0, 0.0)
+            return
 
         if robot.goal:
             # Check if robot is stuck
@@ -851,6 +992,37 @@ class SubterraneanMapper:
         else:
             # Local Scanning Mode: Spin slowly to build map if no goal
             robot.move(0.0, 0.5)
+
+    def trigger_return_home(self):
+        """
+        Trigger all robots to return to their home positions using global graph.
+        """
+        for robot in self.robots:
+            robot.mode = 'RETURNING_HOME'
+            
+            # Plan path home using global graph
+            home_path = robot.plan_path_on_global_graph(tuple(robot.home_position))
+            
+            if home_path and len(home_path) > 1:
+                # Convert world path to grid path for follow_path compatibility
+                robot.goal = home_path[-1]  # Final destination
+                robot.path = []
+                
+                # Convert each waypoint to grid coordinates
+                for waypoint in home_path[1:]:  # Skip first point (current position)
+                    grid_pos = self.world_to_grid(waypoint[0], waypoint[1])
+                    robot.path.append(grid_pos)
+                
+                print(f"Robot {robot.id}: Planned return path with {len(robot.path)} waypoints")
+            else:
+                # Fallback: plan direct A* path if global graph path failed
+                pos, _ = p.getBasePositionAndOrientation(robot.id)
+                start_grid = self.world_to_grid(pos[0], pos[1])
+                home_grid = self.world_to_grid(robot.home_position[0], robot.home_position[1])
+                
+                robot.path = self.plan_path_astar(start_grid, home_grid)
+                robot.goal = tuple(robot.home_position)
+                print(f"Robot {robot.id}: Using A* fallback for return path")
 
     def calculate_coverage(self):
         if self.total_free_cells == 0:
@@ -936,6 +1108,30 @@ class SubterraneanMapper:
         color_names = ['red', 'green', 'blue', 'yellow', 'magenta', 'cyan', 'orange', 'purple',
                        'gray', 'pink', 'darkgreen', 'brown', 'navy', 'lime', 'salmon', 'teal']
         
+        # Plot global graph for each robot (edges first, then nodes)
+        for i, robot in enumerate(self.robots):
+            color = color_names[i % len(color_names)]
+            
+            # Draw global graph edges
+            for edge in robot.global_graph_edges:
+                n1, n2 = edge
+                if n1 < len(robot.global_graph_nodes) and n2 < len(robot.global_graph_nodes):
+                    p1 = robot.global_graph_nodes[n1]
+                    p2 = robot.global_graph_nodes[n2]
+                    ax_grid.plot([p1[0], p2[0]], [p1[1], p2[1]], 
+                               c=color, linewidth=1, alpha=0.3, linestyle='-')
+            
+            # Draw global graph nodes
+            if robot.global_graph_nodes:
+                nodes_arr = np.array(robot.global_graph_nodes)
+                ax_grid.scatter(nodes_arr[:, 0], nodes_arr[:, 1], 
+                              c=color, s=15, alpha=0.5, marker='o', zorder=3)
+                
+                # Highlight home position
+                ax_grid.scatter(robot.home_position[0], robot.home_position[1],
+                              c=color, s=100, marker='s', edgecolors='white', 
+                              linewidths=2, zorder=4, label=f'R{i} Home' if i == 0 else '')
+        
         # Plot robots with direction arrows
         for i, robot in enumerate(self.robots):
             color = color_names[i % len(color_names)]
@@ -971,10 +1167,15 @@ class SubterraneanMapper:
         ax_grid.set_ylim(self.map_bounds['y_min'] - bounds_margin, self.map_bounds['y_max'] + bounds_margin)
         ax_grid.set_aspect('equal')
         ax_grid.grid(True, alpha=0.3)
-        ax_grid.set_title('Occupancy Grid (Arrows = Exploration Direction)')
+        
+        # Update title based on status
+        status = "RETURNING HOME" if self.returning_home else "EXPLORING"
+        ax_grid.set_title(f'Occupancy Grid + Global Graph | Status: {status}')
 
         coverage = self.calculate_coverage()
-        ax_grid.text(0.02, 0.98, f'Coverage: {coverage:.1f}%',
+        # Count graph nodes
+        total_nodes = sum(len(r.global_graph_nodes) for r in self.robots)
+        ax_grid.text(0.02, 0.98, f'Coverage: {coverage:.1f}%\nGraph nodes: {total_nodes}',
                     transform=ax_grid.transAxes, verticalalignment='top',
                     bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.9))
 
@@ -1065,19 +1266,48 @@ class SubterraneanMapper:
             if steps is not None and step >= steps:
                 break
 
+            # Check if all robots have returned home
+            if self.returning_home and len(self.robots_home) == len(self.robots):
+                print("\n*** ALL ROBOTS RETURNED HOME ***")
+                break
+
             # COORDINATION STEP (Global Planner)
             if step % 20 == 0:
-                self.assign_global_goals()
+                coverage = self.calculate_coverage()
+                
+                # Check if we should trigger return-to-home
+                if not self.returning_home and coverage >= self.return_home_coverage:
+                    print(f"\n*** COVERAGE {coverage:.1f}% >= {self.return_home_coverage}% - RETURNING HOME ***")
+                    self.returning_home = True
+                    self.trigger_return_home()
+                elif not self.returning_home:
+                    self.assign_global_goals()
 
             # CONTROL STEP (Local Planner)
             for robot in self.robots:
                 self.exploration_logic(robot, step)
+                
+                # Check if robot reached home
+                if self.returning_home and robot.mode == 'RETURNING_HOME':
+                    pos, _ = p.getBasePositionAndOrientation(robot.id)
+                    dist_to_home = np.sqrt((pos[0] - robot.home_position[0])**2 + 
+                                          (pos[1] - robot.home_position[1])**2)
+                    if dist_to_home < 1.0:
+                        robot.mode = 'HOME'
+                        robot.goal = None
+                        robot.path = []
+                        self.robots_home.add(robot.id)
+                        print(f"Robot {robot.id} arrived home!")
 
             # SENSING STEP
             if step % scan_interval == 0:
                 for robot in self.robots:
                     robot.get_lidar_scan(num_rays=180, max_range=15)
                     self.update_occupancy_grid(robot)
+                    
+                    # Update global graph while exploring
+                    if robot.mode != 'HOME':
+                        robot.update_global_graph()
 
                 coverage = self.calculate_coverage()
                 self.coverage_history.append((step, coverage))
@@ -1096,7 +1326,8 @@ class SubterraneanMapper:
 
             if step % 200 == 0:
                 coverage = self.calculate_coverage()
-                print(f"Progress: Step {step} | Coverage: {coverage:.1f}% | Frontiers: {len(self.detect_frontiers())}")
+                status = "RETURNING HOME" if self.returning_home else "EXPLORING"
+                print(f"Progress: Step {step} | Coverage: {coverage:.1f}% | Frontiers: {len(self.detect_frontiers())} | Status: {status}")
 
             step += 1
 
