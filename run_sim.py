@@ -1488,36 +1488,18 @@ class CoverageMapper:
                 robot.move(0.0, 0.5)
 
     def plan_return_path_for_robot(self, robot):
-        """Plan a path home for a single robot."""
-        # Plan path home using global graph
-        home_path = robot.plan_path_on_global_graph(tuple(robot.home_position))
+        """Plan a path home for a single robot using A*."""
+        pos, _ = p.getBasePositionAndOrientation(robot.id)
+        start_grid = self.world_to_grid(pos[0], pos[1])
+        home_grid = self.world_to_grid(robot.home_position[0], robot.home_position[1])
         
-        if home_path and len(home_path) > 1:
-            # Convert world path to grid path for follow_path compatibility
-            robot.goal = home_path[-1]  # Final destination
-            robot.path = []
-            
-            # Convert each waypoint to grid coordinates
-            for waypoint in home_path[1:]:  # Skip first point (current position)
-                grid_pos = self.world_to_grid(waypoint[0], waypoint[1])
-                robot.path.append(grid_pos)
-            
+        robot.path = self.plan_path_astar(start_grid, home_grid)
+        if robot.path:
+            robot.goal = tuple(robot.home_position)
             robot.reset_stuck_state()
-        else:
-            # Fallback: plan direct A* path if global graph path failed
-            pos, _ = p.getBasePositionAndOrientation(robot.id)
-            start_grid = self.world_to_grid(pos[0], pos[1])
-            home_grid = self.world_to_grid(robot.home_position[0], robot.home_position[1])
-            
-            robot.path = self.plan_path_astar(start_grid, home_grid)
-            if robot.path:
-                robot.goal = tuple(robot.home_position)
-                robot.reset_stuck_state()
 
     def trigger_return_home(self):
-        """
-        Trigger all robots to return to their home positions using global graph.
-        """
+        """Trigger all robots to return to their home positions using A*."""
         for robot in self.robots:
             robot.mode = 'RETURNING_HOME'
             self.plan_return_path_for_robot(robot)
