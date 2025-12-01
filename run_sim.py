@@ -6,6 +6,7 @@ IMPROVED VERSION:
 1. Added direction bias to reduce oscillation.
 2. FIXED LIDAR: Now handles max-range "misses" to clear free space in open areas.
 3. NUMBA JIT: A* pathfinding accelerated with Numba for 6-18x speedup.
+4. FIXED ZOMBIE GOALS: Robots now clear goals if they lose the auction, preventing deadlocks.
 
 Architectural influences:
 1. MGG Planner: Bifurcated Local/Global state machine.
@@ -1415,15 +1416,20 @@ class CoverageMapper:
                 winner_robot, winning_frontier = best_pair
                 target_pos = winning_frontier['pos']
                 
-                # Only replan if significant change (prevents micro-adjustments)
+                # FIX for "Zombie Goals": Always update goal coordinate to the NEW frontier.
+                # Previously, we only updated if we decided to replan.
+                # If we skipped replanning, the robot kept aiming at the OLD (stale) coordinate.
+                old_goal = winner_robot.goal
+                winner_robot.goal = target_pos
+                
+                # Optimization: Only replan full A* path if significant change
                 should_replan = True
-                if winner_robot.goal is not None:
-                    dist_change = np.linalg.norm(np.array(target_pos) - np.array(winner_robot.goal))
-                    if dist_change < 1.0:
+                if old_goal is not None:
+                    dist_change = np.linalg.norm(np.array(target_pos) - np.array(old_goal))
+                    if dist_change < 2.0: # If shift is small (<2m), keep old path but update goal coord
                         should_replan = False
                 
                 if should_replan:
-                    winner_robot.goal = target_pos
                     winner_robot.reset_stuck_state()
                     winner_robot.goal_attempts = 0
                     
@@ -1434,7 +1440,7 @@ class CoverageMapper:
                     
                     if path:
                         winner_robot.path = path
-                        print(f"Robot {winner_robot.id}: Assigned goal (Global Utility: {best_global_utility:.1f})")
+                        print(f"Robot {winner_robot.id}: Assigned goal (Utility: {best_global_utility:.1f})")
                     else:
                         winner_robot.goal = None # Failed to plan
 
@@ -1445,6 +1451,15 @@ class CoverageMapper:
             else:
                 # No valid assignments found (rare, usually means penalties outweighed all benefits)
                 break
+        
+        # FIX for "Auction Deadlock": 
+        # Any robot still in unassigned_robots failed to find a valid goal (likely due to crowding).
+        # We MUST clear their old goal, otherwise they will pursue a stale, crowded target forever.
+        for loser_robot in unassigned_robots:
+            if loser_robot.goal is not None:
+                # print(f"Robot {loser_robot.id}: Lost auction (crowded out), clearing goal.")
+                loser_robot.goal = None
+                loser_robot.path = []
 
     def exploration_logic(self, robot, step):
         if robot.manual_control:
