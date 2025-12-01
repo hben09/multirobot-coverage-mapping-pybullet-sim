@@ -1,3 +1,0 @@
-"""
-Pathfinding algorithms module.
-"""

@@ -1,3 +1,0 @@
-"""
-Multi-robot coordination module.
-"""

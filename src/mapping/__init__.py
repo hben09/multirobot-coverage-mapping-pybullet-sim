@@ -1,3 +1,0 @@
-"""
-Occupancy grid mapping module.
-"""
