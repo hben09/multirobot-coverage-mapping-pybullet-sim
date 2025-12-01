@@ -1879,12 +1879,12 @@ class CoverageMapper:
         robots_home = self.robots_home
         return_home_coverage = self.return_home_coverage
         
-        # Timing for performance monitoring in fast mode
-        if fast_mode:
-            import time as time_module
-            start_time = time_module.perf_counter()
-            last_report_time = start_time
-            last_report_step = 0
+        # Timing for performance monitoring (always enabled for time-based reporting)
+        import time as time_module
+        start_time = time_module.perf_counter()
+        last_report_time = start_time
+        last_report_step = 0
+        report_interval_seconds = 3.0  # Print progress every 3 seconds
         
         while True:
             if steps is not None and step >= steps:
@@ -1958,34 +1958,32 @@ class CoverageMapper:
             if use_gui:
                 time.sleep(1./240.)
 
-            # Progress reporting - optimized for fast mode
-            if step % 200 == 0:
+            # Progress reporting - time-based (every 3 seconds)
+            current_time = time_module.perf_counter()
+            elapsed_since_report = current_time - last_report_time
+            
+            if elapsed_since_report >= report_interval_seconds:
+                steps_done = step - last_report_step
+                sps = steps_done / elapsed_since_report if elapsed_since_report > 0 else 0
+                coverage = self.calculate_coverage()
+                status = "RETURNING HOME" if returning_home else "EXPLORING"
+                
                 if fast_mode:
-                    current_time = time_module.perf_counter()
-                    elapsed = current_time - last_report_time
-                    steps_done = step - last_report_step
-                    if elapsed > 0:
-                        sps = steps_done / elapsed
-                        coverage = self.calculate_coverage()
-                        status = "RETURNING HOME" if returning_home else "EXPLORING"
-                        print(f"Step {step} | Coverage: {coverage:.1f}% | {sps:.0f} steps/sec | Status: {status}")
-                    last_report_time = current_time
-                    last_report_step = step
+                    print(f"Step {step} | Coverage: {coverage:.1f}% | {sps:.0f} steps/sec | Status: {status}")
                 else:
-                    coverage = self.calculate_coverage()
-                    status = "RETURNING HOME" if returning_home else "EXPLORING"
-                    frontiers = self.detect_frontiers()
-                    print(f"Progress: Step {step} | Coverage: {coverage:.1f}% | Frontiers: {len(frontiers)} | Status: {status}")
+                    print(f"Step {step} | Coverage: {coverage:.1f}% | {sps:.0f} steps/sec | Status: {status}")
+                
+                last_report_time = current_time
+                last_report_step = step
 
             step += 1
 
-        # Final stats for fast mode
-        if fast_mode:
-            total_time = time_module.perf_counter() - start_time
-            print(f"\n*** FAST MODE STATS ***")
-            print(f"  Total time: {total_time:.2f} seconds")
-            print(f"  Total steps: {step}")
-            print(f"  Average speed: {step/total_time:.0f} steps/second")
+        # Final stats
+        total_time = time_module.perf_counter() - start_time
+        print(f"\n*** SIMULATION COMPLETE ***")
+        print(f"  Total time: {total_time:.2f} seconds")
+        print(f"  Total steps: {step}")
+        print(f"  Average speed: {step/total_time:.0f} steps/second")
 
         # Final frame
         if do_realtime:
