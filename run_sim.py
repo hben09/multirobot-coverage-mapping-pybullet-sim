@@ -2,12 +2,12 @@
 Multi-robot coverage mapping simulation for procedurally generated environments
 Uses the ProceduralEnvironment class from environment_generator to create mazes, caves, tunnels, and rooms
 
-IMPROVED VERSION:
-1. Added direction bias to reduce oscillation.
-2. FIXED LIDAR: Now handles max-range "misses" to clear free space in open areas.
-3. NUMBA JIT: A* pathfinding accelerated with Numba for 6-18x speedup.
-4. FIXED ZOMBIE GOALS: Robots now clear goals if they lose the auction, preventing deadlocks.
-5. PERFORMANCE MONITOR: Added runtime profiling to identify bottlenecks.
+IMPROVED VERSION (v2):
+1. SMART SCHEDULER: Re-plans immediately if robots are idle (no more 200-step delays).
+2. GOAL BLACKLISTING: Remembers unreachable frontiers to prevent infinite retry loops.
+3. SOFTER STUCK DETECTION: Increased tolerance for complex maneuvers.
+4. DIRECTION BIAS: Reduced oscillation.
+5. NUMBA JIT: Accelerated A* pathfinding.
 
 Architectural influences:
 1. MGG Planner: Bifurcated Local/Global state machine.
@@ -388,6 +388,9 @@ class Robot:
         self.manual_control = False
         self.mode = 'IDLE'  # IDLE, EXPLORING, RETURNING_HOME
         
+        # Blacklist for unreachable goals (grid_pos -> expiration_step)
+        self.blacklisted_goals = {}
+        
         # Direction tracking for exploration bias
         self.exploration_direction = np.array([1.0, 0.0])  # Initial heading (east)
         self.direction_history = []  # Track recent movement directions
@@ -443,10 +446,10 @@ class Robot:
         yaw = euler[2]
         return np.array([np.cos(yaw), np.sin(yaw)])
 
-    def check_if_stuck(self, threshold=0.3, stuck_limit=50):
+    def check_if_stuck(self, threshold=0.3, stuck_limit=200):
         """
         Check if robot is stuck (not moving despite having a goal).
-        Returns True if stuck.
+        Increased limit to 200 to prevent false positives on slow turns.
         """
         pos, _ = p.getBasePositionAndOrientation(self.id)
         current_pos = np.array([pos[0], pos[1]])
@@ -466,6 +469,12 @@ class Robot:
         self.stuck_counter = 0
         pos, _ = p.getBasePositionAndOrientation(self.id)
         self.last_position = np.array([pos[0], pos[1]])
+        
+    def cleanup_blacklist(self, current_step):
+        """Remove expired entries from the goal blacklist."""
+        expired = [pos for pos, expiry in self.blacklisted_goals.items() if current_step >= expiry]
+        for pos in expired:
+            del self.blacklisted_goals[pos]
 
     def update_global_graph(self):
         """
@@ -1378,11 +1387,13 @@ class CoverageMapper:
             'alignment': alignment
         }
 
-    def assign_global_goals(self):
+    def assign_global_goals(self, step):
         """
         Market-based Coordination loop (Improved: Global Best-First).
         Prioritizes the best Robot-Frontier match globally to prevent 
         robots from 'stealing' targets from closer robots.
+        
+        Updated with Blacklisting and step-aware cleanup.
         """
         frontiers = self.detect_frontiers()
         if not frontiers:
@@ -1391,7 +1402,8 @@ class CoverageMapper:
         # 1. Prepare robots
         active_robots = [r for r in self.robots if not r.manual_control]
         for robot in active_robots:
-             robot.mode = 'GLOBAL_RELOCATE' 
+             robot.mode = 'GLOBAL_RELOCATE'
+             robot.cleanup_blacklist(step)
 
         # 2. Track assigned goals in this frame to calculate dynamic crowding
         current_round_goals = []
@@ -1412,6 +1424,10 @@ class CoverageMapper:
                     current_goal_pos = np.array(robot.goal)
 
                 for f in frontiers:
+                    # Check blacklist: Skip frontiers that this robot previously failed to reach
+                    if f['grid_pos'] in robot.blacklisted_goals:
+                        continue
+                    
                     target_pos = np.array(f['pos'])
 
                     # --- Calculate Utility ---
@@ -1472,11 +1488,18 @@ class CoverageMapper:
                         winner_robot.path = path
                         print(f"Robot {winner_robot.id}: Assigned goal (Utility: {best_global_utility:.1f})")
                     else:
-                        winner_robot.goal = None # Failed to plan
+                        # Path planning failed - BLACKLIST THIS GOAL
+                        winner_robot.goal = None
+                        winner_robot.blacklisted_goals[winning_frontier['grid_pos']] = step + 500
+                        print(f"Robot {winner_robot.id}: Path failed to {winning_frontier['grid_pos']}, blacklisted for 500 steps.")
+                        # Do NOT remove from unassigned_robots, so it can try to find another goal in next iteration?
+                        # Actually, better to leave it unassigned for this frame to avoid infinite loops in one tick.
+                        # It will be picked up next frame.
 
-                # Mark as assigned and remove from pool
-                current_round_goals.append(target_pos)
-                unassigned_robots.remove(winner_robot)
+                # Mark as assigned and remove from pool ONLY if successful
+                if winner_robot.goal is not None:
+                    current_round_goals.append(target_pos)
+                    unassigned_robots.remove(winner_robot)
                 
             else:
                 # No valid assignments found (rare, usually means penalties outweighed all benefits)
@@ -1504,7 +1527,7 @@ class CoverageMapper:
 
         if robot.goal:
             # Check if robot is stuck
-            if robot.check_if_stuck(threshold=0.2, stuck_limit=100):
+            if robot.check_if_stuck(threshold=0.2, stuck_limit=200):
                 print(f"Robot {robot.id} is stuck! Abandoning goal and replanning...")
                 robot.goal = None
                 robot.path = []
@@ -1850,17 +1873,9 @@ class CoverageMapper:
                        viz_update_interval=50, viz_mode='realtime', log_path='./logs'):
         """
         Run the simulation with configurable visualization and logging.
-        
-        Args:
-            steps: Number of simulation steps (None for unlimited)
-            scan_interval: Steps between LIDAR scans
-            use_gui: Whether to show PyBullet 3D window
-            realtime_viz: (DEPRECATED) Use viz_mode instead
-            viz_update_interval: Steps between visualization/logging updates
-            viz_mode: 'realtime' | 'logging' | 'both' | 'none'
-            log_path: Directory to save log files
         """
         print("Starting multi-robot coverage mapping simulation...")
+        print("*** IMPROVED LOGIC: SMART SCHEDULER + BLACKLISTING ***")
         print("*** PERFORMANCE MODE: INCREMENTAL FRONTIERS + OCTILE HEURISTIC ***")
         print("*** DIRECTION BIAS + VOLUMETRIC GAIN + CROWDING PENALTY ENABLED ***")
         print(f"  - Direction weight: {self.direction_bias_weight}")
@@ -1926,10 +1941,20 @@ class CoverageMapper:
                 break
 
             # =================================================================
-            # 1. Global Planning (Coordination)
+            # 1. Global Planning (Coordination) - SMART SCHEDULER
             # =================================================================
             t0 = time_module.perf_counter()
-            if step % 200 == 0:
+            
+            # Smart Scheduler Logic
+            active_robots = [r for r in robots if not r.manual_control]
+            # Check if any robot is idle (needs work)
+            any_idle = any(r.goal is None for r in active_robots)
+            
+            # Trigger planning if periodic timer hits (every 50 steps)
+            # OR if robots are idle (throttled to every 5 steps to avoid thrashing)
+            should_plan = (step % 50 == 0) or (any_idle and step % 5 == 0)
+            
+            if should_plan:
                 coverage = self.calculate_coverage(use_cache=False)  # Force fresh calculation
                 
                 # Check if we should trigger return-to-home
@@ -1939,7 +1964,8 @@ class CoverageMapper:
                     self.returning_home = True
                     self.trigger_return_home()
                 elif not returning_home:
-                    self.assign_global_goals()
+                    self.assign_global_goals(step)
+            
             perf_stats['global_planning'] += time_module.perf_counter() - t0
 
             # =================================================================
@@ -2276,7 +2302,7 @@ class CoverageMapper:
 def main():
     print("=" * 60)
     print("Multi-Robot Coverage Mapping")
-    print("IMPROVED VERSION WITH DIRECTION BIAS")
+    print("IMPROVED VERSION (v2): Smart Scheduler + Blacklisting")
     print("=" * 60)
 
     # Maze configuration
