@@ -43,6 +43,16 @@ except ImportError:
     NUMBA_AVAILABLE = False
     print("⚠ Numba not installed - using pure Python A* (pip install numba for 6-18x speedup)")
 
+# =============================================================================
+# Numba-accelerated Occupancy Grid (for fast LIDAR processing)
+# =============================================================================
+try:
+    from numba_occupancy import NumbaOccupancyGrid, NUMBA_AVAILABLE as NUMBA_OCCUPANCY_AVAILABLE
+    print("✓ Numba occupancy grid loaded - LIDAR processing will be accelerated")
+except ImportError:
+    NUMBA_OCCUPANCY_AVAILABLE = False
+    print("⚠ numba_occupancy.py not found - using standard LIDAR processing")
+
 if NUMBA_AVAILABLE:
     @njit(cache=True)
     def _numba_heuristic(ax, ay, bx, by):
@@ -791,6 +801,12 @@ class CoverageMapper:
         # Pre-computed grid bounds for frontier detection (avoid repeated grid_to_world calls)
         self._grid_bounds = None  # Will be computed on first use
         
+        # Numba-accelerated occupancy grid for fast LIDAR processing
+        if NUMBA_OCCUPANCY_AVAILABLE:
+            self._numba_occupancy = NumbaOccupancyGrid(self.map_bounds, self.grid_resolution)
+        else:
+            self._numba_occupancy = None
+        
         # Logging (initialized later if enabled)
         self.logger = None
         self.env_config = {
@@ -863,22 +879,40 @@ class CoverageMapper:
         return (x, y)
 
     def update_occupancy_grid(self, robot):
-        """Update occupancy grid from robot LIDAR data - OPTIMIZED."""
+        """Update occupancy grid from robot LIDAR data - NUMBA OPTIMIZED."""
         if not robot.lidar_data:
             return
 
         pos, _ = p.getBasePositionAndOrientation(robot.id)
         
-        # Pre-compute for inline world_to_grid
+        # Get recent scans (last 360 points to cover full circle)
+        recent_scans = robot.lidar_data[-360:] if len(robot.lidar_data) > 360 else robot.lidar_data
+        
+        # Use Numba-optimized grid if available
+        if self._numba_occupancy is not None:
+            self._numba_occupancy.update_from_lidar(
+                (pos[0], pos[1]),
+                recent_scans,
+                self.occupancy_grid,
+                self.explored_cells,
+                self.obstacle_cells
+            )
+        else:
+            # Fallback to original Python implementation
+            self._update_occupancy_grid_python(robot, recent_scans)
+    
+    def _update_occupancy_grid_python(self, robot, recent_scans):
+        """Original Python implementation as fallback."""
+        pos, _ = p.getBasePositionAndOrientation(robot.id)
+        
         x_min = self.map_bounds['x_min']
         y_min = self.map_bounds['y_min']
-        inv_res = 1.0 / self.grid_resolution  # Multiply faster than divide
+        inv_res = 1.0 / self.grid_resolution
         
         robot_gx = int((pos[0] - x_min) * inv_res)
         robot_gy = int((pos[1] - y_min) * inv_res)
         robot_grid = (robot_gx, robot_gy)
 
-        # Local references for speed
         occupancy = self.occupancy_grid
         explored = self.explored_cells
         obstacles = self.obstacle_cells
@@ -886,22 +920,16 @@ class CoverageMapper:
         occupancy[robot_grid] = 1
         explored.add(robot_grid)
 
-        # Get recent scans (last 360 points to cover full circle)
-        recent_scans = robot.lidar_data[-360:] if len(robot.lidar_data) > 360 else robot.lidar_data
-
         for hit_x, hit_y, is_hit in recent_scans:
-            # Inline world_to_grid
             obs_gx = int((hit_x - x_min) * inv_res)
             obs_gy = int((hit_y - y_min) * inv_res)
             obstacle_grid = (obs_gx, obs_gy)
             
-            # Only mark as obstacle if it was an actual hit
             if is_hit:
                 occupancy[obstacle_grid] = 2
                 obstacles.add(obstacle_grid)
 
-            # Trace line for BOTH hits and misses (clears free space)
-            # INLINED bresenham for speed
+            # Bresenham line trace
             x0, y0 = robot_gx, robot_gy
             x1, y1 = obs_gx, obs_gy
             
