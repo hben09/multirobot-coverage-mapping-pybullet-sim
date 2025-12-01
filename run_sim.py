@@ -7,6 +7,7 @@ IMPROVED VERSION:
 2. FIXED LIDAR: Now handles max-range "misses" to clear free space in open areas.
 3. NUMBA JIT: A* pathfinding accelerated with Numba for 6-18x speedup.
 4. FIXED ZOMBIE GOALS: Robots now clear goals if they lose the auction, preventing deadlocks.
+5. PERFORMANCE MONITOR: Added runtime profiling to identify bottlenecks.
 
 Architectural influences:
 1. MGG Planner: Bifurcated Local/Global state machine.
@@ -23,6 +24,7 @@ import matplotlib.pyplot as plt
 import os
 import math
 import heapq
+from collections import defaultdict
 from environment_generator import ProceduralEnvironment
 from simulation_logger import SimulationLogger
 
@@ -1883,6 +1885,9 @@ class CoverageMapper:
         last_report_step = 0
         report_interval_seconds = 3.0  # Print progress every 3 seconds
         
+        # Initialize performance statistics
+        perf_stats = defaultdict(float)
+        
         while True:
             if steps is not None and step >= steps:
                 break
@@ -1892,7 +1897,10 @@ class CoverageMapper:
                 print("\n*** ALL ROBOTS RETURNED HOME ***")
                 break
 
-            # COORDINATION STEP (Global Planner) - every 200 steps
+            # =================================================================
+            # 1. Global Planning (Coordination)
+            # =================================================================
+            t0 = time_module.perf_counter()
             if step % 200 == 0:
                 coverage = self.calculate_coverage(use_cache=False)  # Force fresh calculation
                 
@@ -1904,8 +1912,12 @@ class CoverageMapper:
                     self.trigger_return_home()
                 elif not returning_home:
                     self.assign_global_goals()
+            perf_stats['global_planning'] += time_module.perf_counter() - t0
 
-            # CONTROL STEP (Local Planner) - OPTIMIZED inner loop
+            # =================================================================
+            # 2. Local Planning (Control Loop)
+            # =================================================================
+            t0 = time_module.perf_counter()
             for robot in robots:
                 self.exploration_logic(robot, step)
                 
@@ -1920,8 +1932,12 @@ class CoverageMapper:
                         robot.path = []
                         robots_home.add(robot.id)
                         print(f"Robot {robot.id} arrived home!")
+            perf_stats['local_planning'] += time_module.perf_counter() - t0
 
-            # SENSING STEP
+            # =================================================================
+            # 3. Sensing (LIDAR + Mapping)
+            # =================================================================
+            t0 = time_module.perf_counter()
             if step % scan_interval == 0:
                 for robot in robots:
                     robot.get_lidar_scan(num_rays=90, max_range=15)
@@ -1941,15 +1957,25 @@ class CoverageMapper:
                 # Clear volumetric cache periodically as map changes
                 if step % 100 == 0:
                     self.clear_volumetric_cache()
+            perf_stats['sensing'] += time_module.perf_counter() - t0
 
-            # VISUALIZATION / LOGGING STEP
+            # =================================================================
+            # 4. Visualization
+            # =================================================================
+            t0 = time_module.perf_counter()
             if step % viz_update_interval == 0:
                 if do_realtime:
                     self.update_realtime_visualization(step)
                 if do_logging:
                     self.logger.log_frame(step, self)
+            perf_stats['visualization'] += time_module.perf_counter() - t0
 
+            # =================================================================
+            # 5. Physics Simulation
+            # =================================================================
+            t0 = time_module.perf_counter()
             p.stepSimulation()
+            perf_stats['physics'] += time_module.perf_counter() - t0
 
             # Only sleep if using GUI (not in fast mode)
             if use_gui:
@@ -1965,10 +1991,21 @@ class CoverageMapper:
                 coverage = self.calculate_coverage()
                 status = "RETURNING HOME" if returning_home else "EXPLORING"
                 
-                if fast_mode:
-                    print(f"Step {step} | Coverage: {coverage:.1f}% | {sps:.0f} steps/sec | Status: {status}")
-                else:
-                    print(f"Step {step} | Coverage: {coverage:.1f}% | {sps:.0f} steps/sec | Status: {status}")
+                # Print status
+                print(f"Step {step} | Coverage: {coverage:.1f}% | {sps:.0f} steps/sec | Status: {status}")
+                
+                # Print Performance Breakdown
+                total_time = sum(perf_stats.values())
+                if total_time > 0:
+                    print("  [Performance Breakdown]:")
+                    print(f"   - Sensing (LIDAR):   {100*perf_stats['sensing']/total_time:.1f}%")
+                    print(f"   - Global Planning:   {100*perf_stats['global_planning']/total_time:.1f}%")
+                    print(f"   - Local Planning:    {100*perf_stats['local_planning']/total_time:.1f}%")
+                    print(f"   - Visualization:     {100*perf_stats['visualization']/total_time:.1f}%")
+                    print(f"   - Physics Engine:    {100*perf_stats['physics']/total_time:.1f}%")
+                
+                # Reset stats for next interval
+                perf_stats.clear()
                 
                 last_report_time = current_time
                 last_report_step = step
