@@ -1,0 +1,3 @@
+"""
+Visualization and rendering module.
+"""

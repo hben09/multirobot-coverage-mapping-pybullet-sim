@@ -25,9 +25,9 @@ import os
 import math
 import heapq
 from collections import defaultdict
-from environment_generator import ProceduralEnvironment
-from simulation_logger import SimulationLogger
-from robot import Robot
+from src.environment.generator import ProceduralEnvironment
+from src.logging.logger import SimulationLogger
+from src.robot.robot import Robot
 
 # Import the Robot class and MultiRobotMapper from the original file
 import sys
@@ -48,7 +48,7 @@ except ImportError:
 # Numba-accelerated Occupancy Grid (for fast LIDAR processing)
 # =============================================================================
 try:
-    from numba_occupancy import NumbaOccupancyGrid, NUMBA_AVAILABLE as NUMBA_OCCUPANCY_AVAILABLE
+    from src.mapping.numba_occupancy import NumbaOccupancyGrid, NUMBA_AVAILABLE as NUMBA_OCCUPANCY_AVAILABLE
     print("✓ Numba occupancy grid loaded - LIDAR processing will be accelerated")
 except ImportError:
     NUMBA_OCCUPANCY_AVAILABLE = False
