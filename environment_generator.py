@@ -3,6 +3,12 @@ PyBullet Random Maze Environment Generator for Multi-Robot Exploration
 
 This script generates a randomized subterranean maze environment where robots
 spawn on the outside and must explore the interior.
+
+OPTIMIZATION NOTE:
+This version implements Greedy Geometry Merging in the build_walls() method.
+Instead of creating a separate physics body for every single wall cell (which
+lags physics engines), it merges adjacent horizontal wall cells into continuous
+rectangular strips.
 """
 
 import random
@@ -71,9 +77,6 @@ class ProceduralEnvironment:
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
         p.setGravity(0, 0, -9.81)
         p.setRealTimeSimulation(0)
-
-        # Removed static plane loading to allow infinite/procedural floors
-        # self.ground_id = p.loadURDF("plane.urdf")
 
         # Set camera for better view
         if self.gui:
@@ -407,11 +410,18 @@ class ProceduralEnvironment:
                         self.maze_grid[y, x] = 0
 
     # ========================================================================
-    # Wall Building Methods
+    # Wall Building Methods (Optimized)
     # ========================================================================
 
     def build_walls(self):
-        """Build physical walls in PyBullet based on the maze grid."""
+        """
+        Build physical walls in PyBullet based on the maze grid.
+        
+        PERFORMANCE OPTIMIZATION: 
+        Uses Greedy Geometry Merging to combine adjacent horizontal wall cells
+        into single rectangular strips. This drastically reduces the number of 
+        physics bodies and improves simulation performance.
+        """
         if self.maze_grid is None:
             self.generate_maze()
 
@@ -422,30 +432,74 @@ class ProceduralEnvironment:
 
         # Wall visual and collision properties
         wall_color = [0.4, 0.35, 0.3, 1.0]  # Stone-like color
+        
+        rows, cols = self.maze_grid.shape
 
-        # Create walls for each cell marked as wall
-        for y in range(self.maze_grid.shape[0]):
-            for x in range(self.maze_grid.shape[1]):
+        # Scan each row to find continuous horizontal segments of walls
+        for y in range(rows):
+            x = 0
+            while x < cols:
                 if self.maze_grid[y, x] == 1:
-                    wall_id = self._create_wall_block(x, y, wall_color)
+                    # Found a wall, determine its horizontal length
+                    start_x = x
+                    length = 1
+                    
+                    # Look ahead
+                    while (x + 1 < cols) and (self.maze_grid[y, x + 1] == 1):
+                        x += 1
+                        length += 1
+                    
+                    # Create a merged strip wall
+                    wall_id = self._create_wall_strip(start_x, y, length, wall_color)
                     self.wall_ids.append(wall_id)
+                
+                # Move to next cell
+                x += 1
 
         # Add floor to ensure robots don't fall (replaces static plane)
         self._create_floor()
 
         return self.wall_ids
 
-    def _create_wall_block(self, grid_x, grid_y, color):
-        """Create a single wall block at the specified grid position."""
-        # Convert grid coordinates to world coordinates
-        world_x = grid_x * self.cell_size / 2
-        world_y = grid_y * self.cell_size / 2
+    def _create_wall_strip(self, start_grid_x, grid_y, length_cells, color):
+        """
+        Create a merged wall strip covering multiple grid cells.
+        
+        Args:
+            start_grid_x: The starting x index in the grid.
+            grid_y: The y index in the grid.
+            length_cells: How many cells long the wall is.
+            color: RGBA color list.
+        """
+        # Calculate physical dimensions
+        # Note: In the original script logic, the physical spacing was cell_size/2.
+        # Grid index 0 -> World 0.0
+        # Grid index 1 -> World 1.0 (if cell_size=2.0)
+        # Block width was cell_size/2 (so 1.0)
+        
+        spacing = self.cell_size / 2
+        total_length = length_cells * spacing
+        
+        # Calculate center position of the strip
+        # Start World X = start_grid_x * spacing
+        # The center is offset by half the total length minus half the block width
+        # (Since the original blocks were centered on the grid points)
+        
+        # Center of the first block in the strip
+        first_block_center_x = start_grid_x * spacing
+        
+        # Center of the strip is shifted from the first block center
+        # shift = (length_cells - 1) * spacing / 2
+        center_offset = (length_cells - 1) * spacing / 2
+        
+        world_x = first_block_center_x + center_offset
+        world_y = grid_y * spacing
         world_z = self.wall_height / 2
 
         half_extent = [
-            self.cell_size / 4,
-            self.cell_size / 4,
-            self.wall_height / 2
+            total_length / 2,     # Length
+            spacing / 2,          # Thickness (matches original block width)
+            self.wall_height / 2  # Height
         ]
 
         collision_shape = p.createCollisionShape(
@@ -503,11 +557,7 @@ class ProceduralEnvironment:
         )
         
         # Calculate center position
-        # X: Centered on the maze (width / 2)
-        # Y: The maze extends from 0 to maze_height_meters. 
-        #    The floor extends from -spawn_buffer to maze_height_meters.
-        #    Center Y = (Max Y + Min Y) / 2
-        center_x = maze_width_meters / 2
+        center_x = maze_width_meters / 2 - (self.cell_size / 4) # Adjust for grid 0 start
         center_y = (maze_height_meters - spawn_buffer) / 2
         center_z = -thickness / 2
         
@@ -752,7 +802,7 @@ class ProceduralEnvironment:
 def main():
     """Main function demonstrating the maze environment with user input."""
     print("=" * 60)
-    print("PyBullet Random Maze Environment Generator")
+    print("PyBullet Random Maze Environment Generator (Optimized)")
     print("=" * 60)
 
     # --- Input Configuration ---
@@ -809,7 +859,7 @@ def main():
     env.print_maze()
 
     # Build physical walls
-    print("\nBuilding walls in PyBullet...")
+    print("\nBuilding walls in PyBullet (Optimized Merging)...")
     env.build_walls()
 
     # Spawn multiple robots outside the entrance
