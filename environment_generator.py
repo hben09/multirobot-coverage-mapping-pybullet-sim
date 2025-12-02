@@ -72,8 +72,8 @@ class ProceduralEnvironment:
         p.setGravity(0, 0, -9.81)
         p.setRealTimeSimulation(0)
 
-        # Load ground plane
-        self.ground_id = p.loadURDF("plane.urdf")
+        # Removed static plane loading to allow infinite/procedural floors
+        # self.ground_id = p.loadURDF("plane.urdf")
 
         # Set camera for better view
         if self.gui:
@@ -430,8 +430,8 @@ class ProceduralEnvironment:
                     wall_id = self._create_wall_block(x, y, wall_color)
                     self.wall_ids.append(wall_id)
 
-        # Add ceiling to create subterranean feel (optional)
-        self._create_ceiling()
+        # Add floor to ensure robots don't fall (replaces static plane)
+        self._create_floor()
 
         return self.wall_ids
 
@@ -468,30 +468,47 @@ class ProceduralEnvironment:
 
         return wall_id
 
-    def _create_ceiling(self):
-        """Create a semi-transparent ceiling for the subterranean environment."""
+    def _create_floor(self):
+        """Create a procedural floor matching the maze dimensions."""
+        # Calculate full floor dimensions
         grid_width = self.maze_grid.shape[1]
         grid_height = self.maze_grid.shape[0]
-
-        ceiling_width = grid_width * self.cell_size / 2
-        ceiling_height = grid_height * self.cell_size / 2
-
-        # Semi-transparent dark ceiling
-        ceiling_color = [0.2, 0.2, 0.25, 0.3]
+        
+        # Note: cell_size/2 is the actual visual block width
+        floor_width = grid_width * self.cell_size / 2
+        floor_height = grid_height * self.cell_size / 2
+        
+        # Dark grey concrete color
+        floor_color = [0.3, 0.3, 0.35, 1.0]
+        
+        # Thickness of floor (z-dimension)
+        thickness = 0.1
+        
+        collision_shape = p.createCollisionShape(
+            p.GEOM_BOX,
+            halfExtents=[floor_width / 2, floor_height / 2, thickness / 2]
+        )
 
         visual_shape = p.createVisualShape(
             p.GEOM_BOX,
-            halfExtents=[ceiling_width / 2, ceiling_height / 2, 0.05],
-            rgbaColor=ceiling_color
+            halfExtents=[floor_width / 2, floor_height / 2, thickness / 2],
+            rgbaColor=floor_color
         )
-
-        ceiling_id = p.createMultiBody(
+        
+        # Center the floor relative to the maze
+        # Center is at width/2, height/2 because maze starts at 0,0
+        # Position z at -thickness/2 so top surface is at z=0.0
+        floor_id = p.createMultiBody(
             baseMass=0,
+            baseCollisionShapeIndex=collision_shape,
             baseVisualShapeIndex=visual_shape,
-            basePosition=[ceiling_width / 2, ceiling_height / 2, self.wall_height + 0.05]
+            basePosition=[floor_width / 2, floor_height / 2, -thickness / 2]
         )
-
-        self.wall_ids.append(ceiling_id)
+        
+        # Set standard friction
+        p.changeDynamics(floor_id, -1, lateralFriction=0.8)
+        
+        self.wall_ids.append(floor_id)
 
     # ========================================================================
     # Robot Spawning Methods
