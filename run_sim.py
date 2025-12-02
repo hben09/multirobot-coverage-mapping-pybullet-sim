@@ -25,7 +25,7 @@ import os
 import math
 import heapq
 from collections import defaultdict
-from map_generator import ProceduralEnvironment
+from map_generator import MapGenerator, PybulletRenderer
 from simulation_logger import SimulationLogger
 
 # Import the Robot class and MultiRobotMapper from the original file
@@ -743,16 +743,22 @@ class CoverageMapper:
     def __init__(self, use_gui=True, maze_size=(10, 10), cell_size=2.0, env_seed=None, env_type='maze', num_robots=3):
         self.num_robots = num_robots
         
-        self.env = ProceduralEnvironment(
+        # Generate the maze grid first
+        map_generator = MapGenerator(
             maze_size=maze_size,
-            cell_size=cell_size,
-            wall_height=2.5,
-            wall_thickness=0.2,
-            gui=use_gui,
             seed=env_seed
         )
+        maze_grid, entrance_cell = map_generator.generate_maze(env_type=env_type)
 
-        self.env.generate_maze(env_type=env_type)
+        # Create PyBullet environment from the grid
+        self.env = PybulletRenderer(
+            maze_grid=maze_grid,
+            entrance_cell=entrance_cell,
+            cell_size=cell_size,
+            wall_height=2.5,
+            gui=use_gui
+        )
+
         self.env.build_walls()
         self.physics_client = self.env.physics_client
 
