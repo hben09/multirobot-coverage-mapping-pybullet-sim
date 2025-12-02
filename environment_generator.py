@@ -469,14 +469,21 @@ class ProceduralEnvironment:
         return wall_id
 
     def _create_floor(self):
-        """Create a procedural floor matching the maze dimensions."""
+        """Create a procedural floor matching the maze dimensions plus spawn area."""
         # Calculate full floor dimensions
         grid_width = self.maze_grid.shape[1]
         grid_height = self.maze_grid.shape[0]
         
-        # Note: cell_size/2 is the actual visual block width
-        floor_width = grid_width * self.cell_size / 2
-        floor_height = grid_height * self.cell_size / 2
+        # Maze dimensions in meters
+        maze_width_meters = grid_width * self.cell_size / 2
+        maze_height_meters = grid_height * self.cell_size / 2
+        
+        # Extend floor backwards (negative Y) for the spawn area
+        # Robots spawn at y = -cell_size. We add a buffer of 5 cells.
+        spawn_buffer = self.cell_size * 5
+        
+        total_width = maze_width_meters
+        total_height = maze_height_meters + spawn_buffer
         
         # Dark grey concrete color
         floor_color = [0.3, 0.3, 0.35, 1.0]
@@ -486,23 +493,29 @@ class ProceduralEnvironment:
         
         collision_shape = p.createCollisionShape(
             p.GEOM_BOX,
-            halfExtents=[floor_width / 2, floor_height / 2, thickness / 2]
+            halfExtents=[total_width / 2, total_height / 2, thickness / 2]
         )
 
         visual_shape = p.createVisualShape(
             p.GEOM_BOX,
-            halfExtents=[floor_width / 2, floor_height / 2, thickness / 2],
+            halfExtents=[total_width / 2, total_height / 2, thickness / 2],
             rgbaColor=floor_color
         )
         
-        # Center the floor relative to the maze
-        # Center is at width/2, height/2 because maze starts at 0,0
-        # Position z at -thickness/2 so top surface is at z=0.0
+        # Calculate center position
+        # X: Centered on the maze (width / 2)
+        # Y: The maze extends from 0 to maze_height_meters. 
+        #    The floor extends from -spawn_buffer to maze_height_meters.
+        #    Center Y = (Max Y + Min Y) / 2
+        center_x = maze_width_meters / 2
+        center_y = (maze_height_meters - spawn_buffer) / 2
+        center_z = -thickness / 2
+        
         floor_id = p.createMultiBody(
             baseMass=0,
             baseCollisionShapeIndex=collision_shape,
             baseVisualShapeIndex=visual_shape,
-            basePosition=[floor_width / 2, floor_height / 2, -thickness / 2]
+            basePosition=[center_x, center_y, center_z]
         )
         
         # Set standard friction
