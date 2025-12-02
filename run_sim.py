@@ -1,18 +1,12 @@
 import pybullet as p
-import pybullet_data
 import numpy as np
 import time
 import matplotlib.pyplot as plt
-import os
-import math
 import heapq
 from collections import defaultdict
 from environment import MapGenerator, PybulletRenderer
 from sim_logger import SimulationLogger
 
-# Import the Robot class and MultiRobotMapper from the original file
-import sys
-sys.path.append(os.path.dirname(__file__))
 
 # =============================================================================
 # Numba JIT-compiled A* Pathfinding (6-18x faster than pure Python)
@@ -938,33 +932,6 @@ class CoverageMapper:
                     if cell in self.explored_cells:
                         self._frontier_candidates.add(cell)
 
-    def bresenham_line(self, x0, y0, x1, y1):
-        """Bresenham's line algorithm - kept for compatibility but inlined in update_occupancy_grid."""
-        dx = abs(x1 - x0)
-        dy = abs(y1 - y0)
-        sx = 1 if x0 < x1 else -1
-        sy = 1 if y0 < y1 else -1
-        err = dx - dy
-
-        x, y = x0, y0
-        while True:
-            cell = (x, y)
-            # Don't overwrite obstacles with free space
-            if cell not in self.obstacle_cells:
-                self.occupancy_grid[cell] = 1
-                self.explored_cells.add(cell)
-
-            if x == x1 and y == y1:
-                break
-
-            e2 = 2 * err
-            if e2 > -dy:
-                err -= dy
-                x += sx
-            if e2 < dx:
-                err += dx
-                y += sy
-
     def detect_frontiers(self, use_cache=False):
         """
         Detect and cluster frontier cells - OPTIMIZED with candidate tracking.
@@ -1096,17 +1063,6 @@ class CoverageMapper:
         # so we just return the result.
         return path
     
-    def _plan_path_astar_no_buffer(self, start_grid, goal_grid):
-        """Fallback A* without obstacle inflation for tight spaces."""
-        # This function is now just an alias for the main planner
-        # but explicitly without inflation.
-        self._numba_astar.update_grid(
-            self.occupancy_grid,
-            self.obstacle_cells,
-            self.safety_margin
-        )
-        return self._numba_astar.plan_path(start_grid, goal_grid, use_inflation=False)
-
     def estimate_volumetric_gain(self, frontier_pos):
         """
         Estimate how much unknown space would be revealed from a frontier position.
@@ -1776,8 +1732,7 @@ class CoverageMapper:
         return_home_coverage = self.return_home_coverage
         
         # Timing for performance monitoring (always enabled for time-based reporting)
-        import time as time_module
-        start_time = time_module.perf_counter()
+        start_time = time.perf_counter()
         last_report_time = start_time
         last_report_step = 0
         report_interval_seconds = 3.0  # Print progress every 3 seconds
@@ -1797,7 +1752,7 @@ class CoverageMapper:
             # =================================================================
             # 1. Global Planning (Coordination) - SMART SCHEDULER
             # =================================================================
-            t0 = time_module.perf_counter()
+            t0 = time.perf_counter()
             
             # Smart Scheduler Logic
             active_robots = [r for r in robots if not r.manual_control]
@@ -1820,12 +1775,12 @@ class CoverageMapper:
                 elif not returning_home:
                     self.assign_global_goals(step)
             
-            perf_stats['global_planning'] += time_module.perf_counter() - t0
+            perf_stats['global_planning'] += time.perf_counter() - t0
 
             # =================================================================
             # 2. Local Planning (Control Loop)
             # =================================================================
-            t0 = time_module.perf_counter()
+            t0 = time.perf_counter()
             for robot in robots:
                 self.exploration_logic(robot, step)
                 
@@ -1840,12 +1795,12 @@ class CoverageMapper:
                         robot.path = []
                         robots_home.add(robot.id)
                         print(f"Robot {robot.id} arrived home!")
-            perf_stats['local_planning'] += time_module.perf_counter() - t0
+            perf_stats['local_planning'] += time.perf_counter() - t0
 
             # =================================================================
             # 3. Sensing (LIDAR + Mapping)
             # =================================================================
-            t0 = time_module.perf_counter()
+            t0 = time.perf_counter()
             if step % scan_interval == 0:
                 for robot in robots:
                     robot.get_lidar_scan(num_rays=90, max_range=15)
@@ -1865,32 +1820,32 @@ class CoverageMapper:
                 # Clear volumetric cache periodically as map changes
                 if step % 100 == 0:
                     self.clear_volumetric_cache()
-            perf_stats['sensing'] += time_module.perf_counter() - t0
+            perf_stats['sensing'] += time.perf_counter() - t0
 
             # =================================================================
             # 4. Visualization
             # =================================================================
-            t0 = time_module.perf_counter()
+            t0 = time.perf_counter()
             if step % viz_update_interval == 0:
                 if do_realtime:
                     self.update_realtime_visualization(step)
                 if do_logging:
                     self.logger.log_frame(step, self)
-            perf_stats['visualization'] += time_module.perf_counter() - t0
+            perf_stats['visualization'] += time.perf_counter() - t0
 
             # =================================================================
             # 5. Physics Simulation
             # =================================================================
-            t0 = time_module.perf_counter()
+            t0 = time.perf_counter()
             p.stepSimulation()
-            perf_stats['physics'] += time_module.perf_counter() - t0
+            perf_stats['physics'] += time.perf_counter() - t0
 
             # Only sleep if using GUI (not in fast mode)
             if use_gui:
                 time.sleep(1./240.)
 
             # Progress reporting - time-based (every 3 seconds)
-            current_time = time_module.perf_counter()
+            current_time = time.perf_counter()
             elapsed_since_report = current_time - last_report_time
             
             if elapsed_since_report >= report_interval_seconds:
@@ -1921,7 +1876,7 @@ class CoverageMapper:
             step += 1
 
         # Final stats
-        total_time = time_module.perf_counter() - start_time
+        total_time = time.perf_counter() - start_time
         print(f"\n*** SIMULATION COMPLETE ***")
         print(f"  Total time: {total_time:.2f} seconds")
         print(f"  Total steps: {step}")
@@ -1947,207 +1902,6 @@ class CoverageMapper:
         print(f"Explored Free Cells: {int(final_coverage/100 * self.total_free_cells)}/{int(self.total_free_cells)}")
 
         return None  # No log file if not logging
-
-    def generate_video_from_log(self, log_filepath, video_path, fps=30, dpi=100):
-        """Generate MP4 video from a simulation log file."""
-        import matplotlib.animation as animation
-        
-        # Load the log data
-        data = SimulationLogger.load(log_filepath)
-        metadata = data['metadata']
-        frames = data['frames']
-        num_frames = data['num_frames']
-        
-        print(f"  Rendering {num_frames} frames to {video_path}...")
-        
-        # Color names for visualization
-        color_names = ['red', 'green', 'blue', 'yellow', 'magenta', 'cyan', 
-                      'orange', 'purple', 'gray', 'pink', 'darkgreen', 'brown', 
-                      'navy', 'lime', 'salmon', 'teal']
-        
-        # Setup figure (same layout as realtime viz)
-        fig = plt.figure(figsize=(18, 14))
-        gs = fig.add_gridspec(2, 2, height_ratios=[3, 1], hspace=0.25, wspace=0.2)
-        
-        axes = {
-            'grid': fig.add_subplot(gs[0, 0]),
-            'frontier': fig.add_subplot(gs[0, 1]),
-            'coverage': fig.add_subplot(gs[1, :]),
-        }
-        
-        env_config = metadata['env_config']
-        title = f"Simulation: {env_config['env_type']} {env_config['maze_size']} | {env_config['num_robots']} robots"
-        fig.suptitle(title, fontsize=14, fontweight='bold')
-        
-        def grid_to_world(grid_x, grid_y):
-            x = metadata['map_bounds']['x_min'] + (grid_x + 0.5) * metadata['grid_resolution']
-            y = metadata['map_bounds']['y_min'] + (grid_y + 0.5) * metadata['grid_resolution']
-            return (x, y)
-        
-        def render_frame(frame_idx):
-            if frame_idx >= len(frames):
-                return []
-                
-            frame = frames[frame_idx]
-            
-            for ax in axes.values():
-                ax.clear()
-                
-            # === Occupancy Grid ===
-            ax_grid = axes['grid']
-            bounds = metadata['map_bounds']
-            resolution = metadata['grid_resolution']
-            
-            grid_x_size = int((bounds['x_max'] - bounds['x_min']) / resolution)
-            grid_y_size = int((bounds['y_max'] - bounds['y_min']) / resolution)
-            grid_image = np.ones((grid_y_size, grid_x_size, 3)) * 0.7
-            
-            for cell_str, value in frame['occupancy_grid'].items():
-                gx, gy = map(int, cell_str.split(','))
-                if 0 <= gx < grid_x_size and 0 <= gy < grid_y_size:
-                    if value == 1:
-                        grid_image[gy, gx] = [1, 1, 1]
-                    elif value == 2:
-                        grid_image[gy, gx] = [0, 0, 0]
-                        
-            extent = [bounds['x_min'], bounds['x_max'], bounds['y_min'], bounds['y_max']]
-            ax_grid.imshow(grid_image, origin='lower', extent=extent, interpolation='nearest')
-            
-            # Draw robots
-            for i, robot_state in enumerate(frame['robots']):
-                color = color_names[i % len(color_names)]
-                pos = robot_state['position']
-                
-                # Trajectory
-                if robot_state['trajectory']:
-                    traj = np.array(robot_state['trajectory'])
-                    ax_grid.plot(traj[:, 0], traj[:, 1], c=color, linewidth=1.5, alpha=0.6)
-                
-                # Global graph edges
-                for edge in robot_state['global_graph_edges']:
-                    n1, n2 = edge
-                    nodes = robot_state['global_graph_nodes']
-                    if n1 < len(nodes) and n2 < len(nodes):
-                        p1, p2 = nodes[n1], nodes[n2]
-                        ax_grid.plot([p1[0], p2[0]], [p1[1], p2[1]], c=color, linewidth=1, alpha=0.3)
-                
-                # Planned path
-                if robot_state['path']:
-                    path_world = [grid_to_world(p[0], p[1]) for p in robot_state['path']]
-                    path_arr = np.array(path_world)
-                    ax_grid.plot(path_arr[:, 0], path_arr[:, 1], c=color, linestyle=':', linewidth=2)
-                
-                # Robot marker
-                ax_grid.scatter(pos[0], pos[1], c=color, s=100, marker='^',
-                              edgecolors='black', linewidths=1.5, zorder=5)
-                
-                # Exploration direction arrow
-                exp_dir = robot_state['exploration_direction']
-                arrow_len = 1.5
-                ax_grid.arrow(pos[0], pos[1], exp_dir[0] * arrow_len, exp_dir[1] * arrow_len,
-                             head_width=0.3, head_length=0.2, fc=color, ec='black', alpha=0.7, zorder=6)
-                
-                # Goal marker
-                if robot_state['goal']:
-                    goal = robot_state['goal']
-                    ax_grid.scatter(goal[0], goal[1], c=color, s=150, marker='X',
-                                  edgecolors='white', linewidths=2, zorder=6)
-                
-                # Home position
-                home = metadata['robot_home_positions'][i]
-                ax_grid.scatter(home[0], home[1], c=color, s=100, marker='s',
-                              edgecolors='white', linewidths=2, zorder=4)
-            
-            status = "RETURNING HOME" if frame['returning_home'] else "EXPLORING"
-            ax_grid.set_title(f'Occupancy Grid | Step {frame["step"]} | Status: {status}')
-            ax_grid.set_aspect('equal')
-            ax_grid.grid(True, alpha=0.3)
-            ax_grid.text(0.02, 0.98, f'Coverage: {frame["coverage"]:.1f}%',
-                        transform=ax_grid.transAxes, verticalalignment='top',
-                        bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.9))
-            
-            # === Frontier Map ===
-            ax_frontier = axes['frontier']
-            
-            if frame['explored_cells']:
-                explored_points = []
-                for cell in frame['explored_cells']:
-                    cell_key = f"{cell[0]},{cell[1]}"
-                    if frame['occupancy_grid'].get(cell_key) == 1:
-                        x, y = grid_to_world(cell[0], cell[1])
-                        explored_points.append([x, y])
-                if explored_points:
-                    explored_arr = np.array(explored_points)
-                    ax_frontier.scatter(explored_arr[:, 0], explored_arr[:, 1],
-                                      c='lightblue', s=3, alpha=0.4, marker='s')
-            
-            if frame['obstacle_cells']:
-                obstacle_points = [grid_to_world(c[0], c[1]) for c in frame['obstacle_cells']]
-                obstacle_arr = np.array(obstacle_points)
-                ax_frontier.scatter(obstacle_arr[:, 0], obstacle_arr[:, 1], c='black', s=3, marker='s')
-            
-            if frame['frontiers']:
-                frontier_points = [f['pos'] for f in frame['frontiers']]
-                frontier_arr = np.array(frontier_points)
-                ax_frontier.scatter(frontier_arr[:, 0], frontier_arr[:, 1],
-                                  c='yellow', s=50, marker='o', edgecolors='red', linewidths=2, zorder=10)
-            
-            for i, robot_state in enumerate(frame['robots']):
-                color = color_names[i % len(color_names)]
-                pos = robot_state['position']
-                ax_frontier.scatter(pos[0], pos[1], c=color, s=150, marker='^',
-                                  edgecolors='black', linewidths=2, zorder=6)
-            
-            ax_frontier.set_xlim(bounds['x_min'] - 5, bounds['x_max'] + 5)
-            ax_frontier.set_ylim(bounds['y_min'] - 5, bounds['y_max'] + 5)
-            ax_frontier.set_aspect('equal')
-            ax_frontier.grid(True, alpha=0.3)
-            num_frontiers = len(frame['frontiers']) if frame['frontiers'] else 0
-            ax_frontier.set_title(f'Frontier Detection ({num_frontiers} targets)')
-            ax_frontier.set_xlabel('X (meters)')
-            ax_frontier.set_ylabel('Y (meters)')
-            
-            # === Coverage Graph ===
-            ax_coverage = axes['coverage']
-            
-            steps_list = [f['step'] for f in frames[:frame_idx + 1]]
-            coverages = [f['coverage'] for f in frames[:frame_idx + 1]]
-            
-            if steps_list:
-                ax_coverage.plot(steps_list, coverages, linewidth=2, color='blue')
-                ax_coverage.fill_between(steps_list, coverages, alpha=0.3, color='blue')
-                ax_coverage.axhline(y=frame['coverage'], color='red', linestyle='--', alpha=0.5)
-            
-            ax_coverage.set_xlabel('Simulation Step')
-            ax_coverage.set_ylabel('Coverage (%)')
-            ax_coverage.set_title('Coverage Progress')
-            ax_coverage.grid(True, alpha=0.3)
-            ax_coverage.set_ylim(0, 100)
-            if frames:
-                max_step = frames[-1]['step']
-                ax_coverage.set_xlim(0, max(2000, max_step))
-            
-            return []
-        
-        def animate(frame_idx):
-            render_frame(frame_idx)
-            if frame_idx % 20 == 0:
-                print(f"    Frame {frame_idx}/{num_frames} ({100*frame_idx/num_frames:.0f}%)")
-            return []
-        
-        ani = animation.FuncAnimation(fig, animate, frames=num_frames, interval=1000/fps, blit=True)
-        
-        # Save video
-        try:
-            writer = animation.FFMpegWriter(fps=fps, bitrate=5000)
-            ani.save(video_path, writer=writer, dpi=dpi)
-            print(f"  Video saved: {video_path}")
-            print(f"  File size: {os.path.getsize(video_path) / 1024 / 1024:.2f} MB")
-        except Exception as e:
-            print(f"  Warning: Could not save video (ffmpeg may not be installed): {e}")
-            print(f"  You can still replay interactively with: python playback.py {log_filepath}")
-        
-        plt.close(fig)
 
     def cleanup(self):
         self.env.close()
