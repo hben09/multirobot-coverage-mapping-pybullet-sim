@@ -1,15 +1,3 @@
-"""
-PyBullet Random Maze Environment Generator for Multi-Robot Exploration
-
-This script generates a randomized subterranean maze environment where robots
-spawn on the outside and must explore the interior.
-
-OPTIMIZATION NOTE:
-This version implements Greedy Geometry Merging in the build_walls() method.
-Instead of creating a separate physics body for every single wall cell (which
-lags physics engines), it merges adjacent horizontal wall cells into continuous
-rectangular strips.
-"""
 
 import random
 import time
