@@ -15,13 +15,20 @@ import argparse
 import os
 import sys
 
+# Import the logger to use its reconstruction logic
+try:
+    from simulation_logger import SimulationLogger
+except ImportError:
+    print("Error: simulation_logger.py must be in the same directory.")
+    sys.exit(1)
+
 
 class SimulationPlayback:
     """Plays back logged simulation data with interactive controls."""
     
     def __init__(self, log_filepath):
-        print(f"Loading simulation log: {log_filepath}")
-        self.data = self.load_log(log_filepath)
+        # Use SimulationLogger.load to handle delta reconstruction
+        self.data = SimulationLogger.load(log_filepath)
         self.metadata = self.data['metadata']
         self.frames = self.data['frames']
         self.num_frames = self.data['num_frames']
@@ -39,16 +46,6 @@ class SimulationPlayback:
                            'orange', 'purple', 'gray', 'pink', 'darkgreen', 'brown', 
                            'navy', 'lime', 'salmon', 'teal']
         
-    @staticmethod
-    def load_log(filepath):
-        """Load logged data from NPZ file."""
-        data = np.load(filepath, allow_pickle=True)
-        return {
-            'metadata': data['metadata'][0],
-            'frames': data['frames'].tolist(),
-            'num_frames': int(data['num_frames']),
-        }
-    
     def setup_figure(self):
         """Setup the matplotlib figure with same layout as realtime viz."""
         self.fig = plt.figure(figsize=(18, 14))
@@ -160,8 +157,13 @@ class SimulationPlayback:
         grid_image = np.ones((grid_y, grid_x, 3)) * 0.7
         
         # Parse occupancy grid
-        for cell_str, value in frame['occupancy_grid'].items():
-            gx, gy = map(int, cell_str.split(','))
+        # UPDATED: Handles both tuple keys (new format) and string keys (legacy format)
+        for cell_key, value in frame['occupancy_grid'].items():
+            if isinstance(cell_key, str):
+                gx, gy = map(int, cell_key.split(','))
+            else:
+                gx, gy = cell_key
+                
             if 0 <= gx < grid_x and 0 <= gy < grid_y:
                 if value == 1:
                     grid_image[gy, gx] = [1, 1, 1]  # White for free
@@ -235,10 +237,17 @@ class SimulationPlayback:
         if frame['explored_cells']:
             explored_points = []
             for cell in frame['explored_cells']:
-                cell_key = f"{cell[0]},{cell[1]}"
-                if frame['occupancy_grid'].get(cell_key) == 1:
+                # UPDATED: Handles both tuple/list keys
+                cell_tuple = tuple(cell)
+                # Check directly in occupancy grid dict (which now uses tuple keys)
+                if frame['occupancy_grid'].get(cell_tuple) == 1:
                     x, y = self.grid_to_world(cell[0], cell[1])
                     explored_points.append([x, y])
+                # Fallback for old string keys
+                elif frame['occupancy_grid'].get(f"{cell[0]},{cell[1]}") == 1:
+                    x, y = self.grid_to_world(cell[0], cell[1])
+                    explored_points.append([x, y])
+                    
             if explored_points:
                 explored_arr = np.array(explored_points)
                 ax_frontier.scatter(explored_arr[:, 0], explored_arr[:, 1],

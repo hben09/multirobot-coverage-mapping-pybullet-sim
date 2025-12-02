@@ -12,18 +12,6 @@ Usage:
 
     # Control parallelism (4 workers)
     render_video_from_log('logs/sim_log_xxx.npz', num_workers=4)
-
-    # Sequential (no parallelism)
-    render_video_from_log('logs/sim_log_xxx.npz', num_workers=1)
-
-CLI Usage:
-    python video_renderer_opencv.py logs/sim_log_xxx.npz
-    python video_renderer_opencv.py logs/sim_log_xxx.npz -j 4
-
-Output:
-    - Videos are always saved to a 'logs' folder
-    - If input is 'logs/file.npz', output is 'logs/file.mp4'
-    - If input is 'file.npz', output is 'logs/file.mp4'
 """
 
 import cv2
@@ -33,6 +21,13 @@ from multiprocessing import Pool
 import os
 import sys
 import time
+
+# Import the logger to use its delta reconstruction logic
+try:
+    from simulation_logger import SimulationLogger
+except ImportError:
+    print("Error: simulation_logger.py must be in the same directory.")
+    sys.exit(1)
 
 
 # ============================================================================
@@ -202,8 +197,13 @@ def render_occupancy_grid(frame, metadata, transform, panel_size):
     cell_pixel_size = max(1, int(resolution * transform.scale))
     
     # Draw occupancy grid cells
-    for cell_str, value in frame['occupancy_grid'].items():
-        gx, gy = map(int, cell_str.split(','))
+    # UPDATED: Supports tuple keys (new format) and string keys (legacy)
+    for cell_key, value in frame['occupancy_grid'].items():
+        if isinstance(cell_key, str):
+            gx, gy = map(int, cell_key.split(','))
+        else:
+            gx, gy = cell_key
+            
         px, py = transform.grid_to_pixel(gx, gy)
         
         half_size = cell_pixel_size // 2
@@ -296,8 +296,16 @@ def render_frontier_map(frame, metadata, transform, panel_size):
     
     # Draw explored cells (light blue for free space)
     for cell in frame['explored_cells']:
-        cell_key = f"{cell[0]},{cell[1]}"
-        if frame['occupancy_grid'].get(cell_key) == 1:
+        # Check occupancy grid (supports tuple keys and string keys)
+        cell_tuple = tuple(cell)
+        is_free = False
+        
+        if frame['occupancy_grid'].get(cell_tuple) == 1:
+            is_free = True
+        elif frame['occupancy_grid'].get(f"{cell[0]},{cell[1]}") == 1:
+            is_free = True
+            
+        if is_free:
             px, py = transform.grid_to_pixel(cell[0], cell[1])
             half_size = cell_pixel_size // 2
             cv2.rectangle(img, 
@@ -489,11 +497,10 @@ def _worker_init(log_filepath, shared_output_size, shared_max_steps):
     """Initialize worker process with shared data."""
     global _frames, _metadata, _output_size, _max_steps
     
-    # Load data locally in the worker process
-    # This prevents pickling huge objects across process boundaries
-    data = np.load(log_filepath, allow_pickle=True)
-    _metadata = data['metadata'][0]
-    _frames = data['frames'].tolist() # Worker now owns this memory
+    # UPDATED: Use SimulationLogger.load to properly handle Delta Encoding
+    data = SimulationLogger.load(log_filepath)
+    _metadata = data['metadata']
+    _frames = data['frames'] # Worker now owns this memory
     
     _output_size = shared_output_size
     _max_steps = shared_max_steps
@@ -551,10 +558,10 @@ def render_video_from_log(log_filepath, num_workers=None):
     print(f"Loading log file: {log_filepath}")
     print(f"Output will be saved to: {output_path}")
     
-    # Load log data (only for main process to get metadata/length)
-    data = np.load(log_filepath, allow_pickle=True)
-    metadata = data['metadata'][0]
-    frames = data['frames'].tolist()
+    # UPDATED: Use SimulationLogger.load to get correct frames/metadata
+    data = SimulationLogger.load(log_filepath)
+    metadata = data['metadata']
+    frames = data['frames']
     num_frames = len(frames)
     
     print(f"  Loaded {num_frames} frames")
