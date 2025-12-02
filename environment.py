@@ -131,48 +131,133 @@ class MapGenerator:
         self.entrance_cell = (entrance_x, 0)
 
     def _generate_rooms(self):
+        """
+        Generates a dungeon-like environment using MST for connectivity.
+        Features: Dynamic room count, guaranteed connectivity, and loops.
+        """
         grid_height, grid_width = self.maze_grid.shape
+        
+        # 1. Reset grid to full walls
+        self.maze_grid.fill(1)
+        
         rooms = []
-        num_rooms = 15
-        for _ in range(num_rooms):
+        # Heuristic: 1 room per ~50 cells of area, clamped between 5 and 40
+        map_area = grid_width * grid_height
+        target_rooms = int(map_area / 50)
+        target_rooms = max(5, min(40, target_rooms))
+        
+        # 2. Place Rooms (Random attempts with buffer)
+        max_attempts = 200
+        for _ in range(max_attempts):
+            if len(rooms) >= target_rooms:
+                break
+                
             w = random.randint(3, 8)
             h = random.randint(3, 8)
+            # Align to odd coordinates to maintain grid parity
             x = random.randint(1, max(1, (grid_width - w - 2) // 2)) * 2 + 1
             y = random.randint(1, max(1, (grid_height - h - 2) // 2)) * 2 + 1
-            new_room = {'x': x, 'y': y, 'w': w, 'h': h}
+            
+            new_room = {'x': x, 'y': y, 'w': w, 'h': h, 
+                        'cx': x + w // 2, 'cy': y + h // 2}
+            
+            # Check overlap with 1-cell buffer
             failed = False
-            if x <= 0 or y <= 0 or x + w >= grid_width - 1 or y + h >= grid_height - 1:
+            # Boundary check
+            if x + w >= grid_width - 1 or y + h >= grid_height - 1:
                 failed = True
+            
             if not failed:
                 for other in rooms:
-                    if (x < other['x'] + other['w'] and x + w > other['x'] and
-                        y < other['y'] + other['h'] and y + h > other['y']):
+                    # Enforce 1 cell buffer (margin of 1 around existing room)
+                    if (x - 1 < other['x'] + other['w'] + 1 and x + w + 1 > other['x'] - 1 and
+                        y - 1 < other['y'] + other['h'] + 1 and y + h + 1 > other['y'] - 1):
                         failed = True
                         break
+            
             if not failed:
+                # Carve room immediately
                 self.maze_grid[y:y+h, x:x+w] = 0
                 rooms.append(new_room)
-        rooms.sort(key=lambda r: (r['y'], r['x']))
-        for i in range(len(rooms) - 1):
-            r1 = rooms[i]
-            r2 = rooms[i+1]
-            c1 = (r1['x'] + r1['w']//2, r1['y'] + r1['h']//2)
-            c2 = (r2['x'] + r2['w']//2, r2['y'] + r2['h']//2)
-            if random.random() < 0.5:
-                self._carve_h_corridor(c1[0], c2[0], c1[1])
-                self._carve_v_corridor(c1[1], c2[1], c2[0])
-            else:
-                self._carve_v_corridor(c1[1], c2[1], c1[0])
-                self._carve_h_corridor(c1[0], c2[0], c2[1])
-        if rooms:
-            first_room = rooms[0]
-            entrance_x = first_room['x'] + first_room['w'] // 2
-            self.maze_grid[0, entrance_x] = 0
-            for y in range(0, first_room['y']):
-                self.maze_grid[y, entrance_x] = 0
-            self.entrance_cell = (entrance_x, 0)
-        else:
+
+        if not rooms:
             self._generate_blank_box()
+            return
+
+        # 3. Connect Rooms (Prim's Algorithm / MST)
+        # Start with the first room as 'connected'
+        connected_indices = {0}
+        unconnected_indices = set(range(1, len(rooms)))
+        
+        # Track active connections to avoid duplicating them later
+        existing_connections = set()
+
+        while unconnected_indices:
+            best_dist = float('inf')
+            best_pair = None # (connected_idx, unconnected_idx)
+
+            # Find the closest connection between the two sets
+            for u_idx in connected_indices:
+                u = rooms[u_idx]
+                for v_idx in unconnected_indices:
+                    v = rooms[v_idx]
+                    # Euclidean distance squared
+                    dist = (u['cx'] - v['cx'])**2 + (u['cy'] - v['cy'])**2
+                    
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_pair = (u_idx, v_idx)
+            
+            if best_pair:
+                u_idx, v_idx = best_pair
+                self._connect_points(rooms[u_idx], rooms[v_idx])
+                connected_indices.add(v_idx)
+                unconnected_indices.remove(v_idx)
+                
+                # Normalize pair for set storage (low, high)
+                pair_key = tuple(sorted((u_idx, v_idx)))
+                existing_connections.add(pair_key)
+
+        # 4. Add Loops (Re-introduce edges with low probability)
+        # This prevents the map from being a perfect tree (single path)
+        for i in range(len(rooms)):
+            for j in range(i + 1, len(rooms)):
+                if (i, j) in existing_connections:
+                    continue
+                
+                r1, r2 = rooms[i], rooms[j]
+                dist = (r1['cx'] - r2['cx'])**2 + (r1['cy'] - r2['cy'])**2
+                
+                # If rooms are reasonably close, 15% chance to add a tunnel
+                if dist < (min(grid_width, grid_height) // 2) ** 2:
+                    if random.random() < 0.15:
+                        self._connect_points(r1, r2)
+                        existing_connections.add((i, j))
+
+        # 5. Set Entrance (First room)
+        first_room = rooms[0]
+        # Find a valid spot in the first room closest to top
+        entrance_x = first_room['cx']
+        # Clear path to top of map
+        self.maze_grid[0, entrance_x] = 0
+        for y in range(0, first_room['y']):
+            self.maze_grid[y, entrance_x] = 0
+        self.entrance_cell = (entrance_x, 0)
+
+    def _connect_points(self, r1, r2):
+        """Draws an L-shaped corridor between two room centers."""
+        x1, y1 = r1['cx'], r1['cy']
+        x2, y2 = r2['cx'], r2['cy']
+        
+        # Randomly choose horizontal or vertical first for variety
+        if random.random() < 0.5:
+            # Horizontal first, then Vertical
+            self._carve_h_corridor(x1, x2, y1)
+            self._carve_v_corridor(y1, y2, x2)
+        else:
+            # Vertical first, then Horizontal
+            self._carve_v_corridor(y1, y2, x1)
+            self._carve_h_corridor(x1, x2, y2)
 
     def _carve_h_corridor(self, x1, x2, y):
         grid_height, grid_width = self.maze_grid.shape
