@@ -425,7 +425,7 @@ class Robot:
         
         # Check current cell and all 8 neighbors
         min_dist_sq = float('inf')
-        nearest_idx = 0
+        nearest_idx = -1
         
         for dx in [-1, 0, 1]:
             for dy in [-1, 0, 1]:
@@ -530,7 +530,7 @@ class Robot:
             self.global_graph_edges.add((self.last_graph_node_idx, new_node_idx))
             
             # Also connect to nearest node if different (creates shortcuts)
-            if nearest_node_idx != self.last_graph_node_idx:
+            if nearest_node_idx != -1 and nearest_node_idx != self.last_graph_node_idx:
                 # Normalize edge representation (smaller index first) for consistent hashing
                 edge = (min(nearest_node_idx, new_node_idx), max(nearest_node_idx, new_node_idx))
                 self.global_graph_edges.add(edge)  # O(1) with set
