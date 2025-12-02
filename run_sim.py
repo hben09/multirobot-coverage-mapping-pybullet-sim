@@ -365,11 +365,15 @@ class NumbaAStarHelper:
 
 
 class Robot:
+    # Class constants for bounded data structures
+    MAX_TRAJECTORY_LENGTH = 200  # Rolling window for trajectory
+    TRAJECTORY_TRIM_SIZE = 150   # Trim to this size when exceeded
+    
     def __init__(self, robot_id, position, color):
         self.id = robot_id
         self.position = position
         self.color = color
-        self.lidar_data = []
+        self.lidar_data = []  # Now replaced each scan, not extended
         self.trajectory = []
         
         # Autonomy State
@@ -392,12 +396,48 @@ class Robot:
         self.goal_attempts = 0
         self.max_goal_attempts = 3  # Give up after 3 failed attempts to reach a goal
         
-        # Global graph for navigation
+        # Global graph for navigation - OPTIMIZED with spatial hashing
         self.home_position = np.array(position[:2])  # Remember start position
         self.global_graph_nodes = [tuple(position[:2])]  # List of (x, y) waypoints
-        self.global_graph_edges = []  # List of (node_idx1, node_idx2) connections
+        self.global_graph_edges = set()  # SET for O(1) membership checks (was list)
         self.last_graph_node_idx = 0  # Index of last node added to graph
         self.waypoint_spacing = 3.0  # Meters between waypoints
+        
+        # Spatial hash for O(1) average nearest-neighbor lookup
+        self._node_grid = defaultdict(list)  # (grid_x, grid_y) -> [node_indices]
+        self._node_grid_cell_size = self.waypoint_spacing  # Grid cell = waypoint spacing
+        # Add initial node to spatial hash
+        self._add_node_to_spatial_hash(0, position[:2])
+    
+    def _get_spatial_hash_cell(self, pos):
+        """Get the spatial hash grid cell for a position."""
+        return (int(pos[0] / self._node_grid_cell_size),
+                int(pos[1] / self._node_grid_cell_size))
+    
+    def _add_node_to_spatial_hash(self, node_idx, pos):
+        """Add a node to the spatial hash."""
+        cell = self._get_spatial_hash_cell(pos)
+        self._node_grid[cell].append(node_idx)
+    
+    def _find_nearest_node_fast(self, pos):
+        """Find nearest node using spatial hash - O(1) average case."""
+        cell = self._get_spatial_hash_cell(pos)
+        
+        # Check current cell and all 8 neighbors
+        min_dist_sq = float('inf')
+        nearest_idx = 0
+        
+        for dx in [-1, 0, 1]:
+            for dy in [-1, 0, 1]:
+                check_cell = (cell[0] + dx, cell[1] + dy)
+                for node_idx in self._node_grid.get(check_cell, []):
+                    node = self.global_graph_nodes[node_idx]
+                    dist_sq = (pos[0] - node[0])**2 + (pos[1] - node[1])**2
+                    if dist_sq < min_dist_sq:
+                        min_dist_sq = dist_sq
+                        nearest_idx = node_idx
+        
+        return nearest_idx, np.sqrt(min_dist_sq)
 
     def update_exploration_direction(self):
         """
@@ -470,34 +510,30 @@ class Robot:
         """
         Add current position to global graph if far enough from existing nodes.
         Creates edges to connect new nodes to the graph.
+        OPTIMIZED: Uses spatial hashing for O(1) nearest-neighbor lookup.
         """
         pos, _ = p.getBasePositionAndOrientation(self.id)
         current_pos = (pos[0], pos[1])
         
-        # Check distance to all existing nodes
-        min_dist = float('inf')
-        nearest_node_idx = 0
-        
-        for i, node in enumerate(self.global_graph_nodes):
-            dist = np.sqrt((current_pos[0] - node[0])**2 + (current_pos[1] - node[1])**2)
-            if dist < min_dist:
-                min_dist = dist
-                nearest_node_idx = i
+        # Use spatial hash for O(1) average nearest-neighbor lookup
+        nearest_node_idx, min_dist = self._find_nearest_node_fast(current_pos)
         
         # Only add new node if far enough from all existing nodes
         if min_dist >= self.waypoint_spacing:
             new_node_idx = len(self.global_graph_nodes)
             self.global_graph_nodes.append(current_pos)
             
+            # Add to spatial hash
+            self._add_node_to_spatial_hash(new_node_idx, current_pos)
+            
             # Connect to the last node we were at (maintains path continuity)
-            self.global_graph_edges.append((self.last_graph_node_idx, new_node_idx))
+            self.global_graph_edges.add((self.last_graph_node_idx, new_node_idx))
             
             # Also connect to nearest node if different (creates shortcuts)
             if nearest_node_idx != self.last_graph_node_idx:
-                edge = (nearest_node_idx, new_node_idx)
-                reverse_edge = (new_node_idx, nearest_node_idx)
-                if edge not in self.global_graph_edges and reverse_edge not in self.global_graph_edges:
-                    self.global_graph_edges.append(edge)
+                # Normalize edge representation (smaller index first) for consistent hashing
+                edge = (min(nearest_node_idx, new_node_idx), max(nearest_node_idx, new_node_idx))
+                self.global_graph_edges.add(edge)  # O(1) with set
             
             self.last_graph_node_idx = new_node_idx
         else:
@@ -508,32 +544,20 @@ class Robot:
         """
         Plan a path on the global graph to reach target_pos.
         Uses Dijkstra's algorithm on the graph.
+        OPTIMIZED: Uses spatial hashing for nearest-neighbor lookups.
         
         Returns: List of (x, y) waypoints to follow
         """
         if len(self.global_graph_nodes) < 2:
             return [target_pos]
         
-        # Find nearest node to current position
+        # Find nearest node to current position using spatial hash
         pos, _ = p.getBasePositionAndOrientation(self.id)
         current_pos = (pos[0], pos[1])
+        start_node_idx, _ = self._find_nearest_node_fast(current_pos)
         
-        start_node_idx = 0
-        min_dist = float('inf')
-        for i, node in enumerate(self.global_graph_nodes):
-            dist = np.sqrt((current_pos[0] - node[0])**2 + (current_pos[1] - node[1])**2)
-            if dist < min_dist:
-                min_dist = dist
-                start_node_idx = i
-        
-        # Find nearest node to target
-        goal_node_idx = 0
-        min_dist = float('inf')
-        for i, node in enumerate(self.global_graph_nodes):
-            dist = np.sqrt((target_pos[0] - node[0])**2 + (target_pos[1] - node[1])**2)
-            if dist < min_dist:
-                min_dist = dist
-                goal_node_idx = i
+        # Find nearest node to target using spatial hash
+        goal_node_idx, _ = self._find_nearest_node_fast(target_pos)
         
         # Build adjacency list
         adjacency = {i: [] for i in range(len(self.global_graph_nodes))}
@@ -631,8 +655,14 @@ class Robot:
                 # Store (x, y, is_hit=False) at max range
                 scan_points.append((ray_to[i][0], ray_to[i][1], False))
 
-        self.lidar_data.extend(scan_points)
+        # OPTIMIZATION: Replace lidar_data entirely instead of extending
+        # The occupancy grid only uses the current scan anyway
+        self.lidar_data = scan_points
+        
+        # OPTIMIZATION: Bound trajectory to prevent unbounded growth
         self.trajectory.append((pos[0], pos[1]))
+        if len(self.trajectory) > Robot.MAX_TRAJECTORY_LENGTH:
+            self.trajectory = self.trajectory[-Robot.TRAJECTORY_TRIM_SIZE:]
         
         # NEW: Update exploration direction after recording trajectory
         self.update_exploration_direction()
@@ -794,8 +824,23 @@ class CoverageMapper:
         self._coverage_explored_count = 0  # Separate counter for coverage cache
         self._cached_frontiers = None  # None = not cached, [] = cached empty
         
+        # INCREMENTAL COVERAGE TRACKING
+        # Instead of iterating all explored_cells, track valid count incrementally
+        self._incremental_valid_count = 0  # Running count of valid explored cells
+        self._processed_explored_cells = set()  # Cells we've already checked for validity
+        
+        # Pre-compute maze lookup acceleration structure
+        self._maze_block_size = self.env.cell_size / 2.0
+        self._maze_half_block = self._maze_block_size / 2.0
+        self._maze_inv_block_size = 1.0 / self._maze_block_size
+        
         # Pre-computed grid bounds for frontier detection (avoid repeated grid_to_world calls)
         self._grid_bounds = None  # Will be computed on first use
+        
+        # INCREMENTAL FRONTIER DETECTION
+        # Track cells that COULD be frontiers (cells at boundary of explored area)
+        # A cell is a frontier candidate if it's explored AND has at least one unknown neighbor
+        self._frontier_candidates = set()  # Cells to check for frontier status
         
         # Numba-accelerated occupancy grid for fast LIDAR processing
         self._numba_occupancy = NumbaOccupancyGrid(self.map_bounds, self.grid_resolution)
@@ -878,16 +923,32 @@ class CoverageMapper:
 
         pos, _ = p.getBasePositionAndOrientation(robot.id)
         
-        # Get recent scans (last 360 points to cover full circle)
-        recent_scans = robot.lidar_data[-360:] if len(robot.lidar_data) > 360 else robot.lidar_data
+        # Track explored cells count before update
+        old_explored_count = len(self.explored_cells)
         
+        # lidar_data is now the current scan only (not accumulated)
         self._numba_occupancy.update_from_lidar(
             (pos[0], pos[1]),
-            recent_scans,
+            robot.lidar_data,
             self.occupancy_grid,
             self.explored_cells,
             self.obstacle_cells
         )
+        
+        # If new cells were explored, update frontier candidates
+        # New cells and their neighbors are potential frontier candidates
+        if len(self.explored_cells) > old_explored_count:
+            # Get the newly added cells (approximate - just use the boundary region)
+            # For efficiency, we add robot's local area to candidates
+            robot_cell = self.world_to_grid(pos[0], pos[1])
+            # Add cells in a radius around the robot (LIDAR range in grid cells)
+            lidar_range_cells = int(15.0 / self.grid_resolution) + 1  # 15m LIDAR range
+            
+            for dx in range(-lidar_range_cells, lidar_range_cells + 1):
+                for dy in range(-lidar_range_cells, lidar_range_cells + 1):
+                    cell = (robot_cell[0] + dx, robot_cell[1] + dy)
+                    if cell in self.explored_cells:
+                        self._frontier_candidates.add(cell)
 
     def bresenham_line(self, x0, y0, x1, y1):
         """Bresenham's line algorithm - kept for compatibility but inlined in update_occupancy_grid."""
@@ -917,7 +978,12 @@ class CoverageMapper:
                 y += sy
 
     def detect_frontiers(self, use_cache=False):
-        """Detect and cluster frontier cells - OPTIMIZED."""
+        """
+        Detect and cluster frontier cells - OPTIMIZED with candidate tracking.
+        
+        Instead of checking ALL explored cells, we only check cells that are
+        likely to be frontiers (cells near the exploration boundary).
+        """
         # NOTE: Caching disabled by default because frontiers change even when 
         # explored_cells count stays the same (boundary cells get filled in)
         # Only use cache for repeated calls within the same simulation step
@@ -936,27 +1002,54 @@ class CoverageMapper:
             }
         
         gb = self._grid_bounds
+        neighbor_offsets = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
         
-        # OPTIMIZED: Use set operations and avoid repeated dict lookups
+        # Use frontier candidates if available, otherwise fall back to all explored cells
+        # (fallback needed for first run or if candidates weren't tracked)
+        if self._frontier_candidates:
+            cells_to_check = self._frontier_candidates
+        else:
+            cells_to_check = self.explored_cells
+        
+        # Find frontier cells
         frontiers = set()
         occupancy = self.occupancy_grid  # Local reference for speed
         
-        # Pre-compute the 8 neighbor offsets
-        neighbor_offsets = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+        # Also track which candidates are NOT frontiers (to remove from candidate set)
+        non_frontier_candidates = set()
         
-        for cell in self.explored_cells:
-            if occupancy.get(cell) != 1:
+        for cell in cells_to_check:
+            if cell not in self.explored_cells:
+                # Cell was in candidates but not explored (shouldn't happen, but be safe)
+                non_frontier_candidates.add(cell)
                 continue
+            if occupancy.get(cell) != 1:
+                non_frontier_candidates.add(cell)
+                continue
+                
             x, y = cell
+            is_frontier = False
+            has_all_neighbors_known = True
+            
             for dx, dy in neighbor_offsets:
                 nx, ny = x + dx, y + dy
-                # Bounds check using grid coordinates directly (faster than world conversion)
+                # Bounds check
                 if not (gb['min_gx'] <= nx <= gb['max_gx'] and gb['min_gy'] <= ny <= gb['max_gy']):
                     continue
                 # Neighbor not in grid = Unknown = Frontier
                 if (nx, ny) not in occupancy:
-                    frontiers.add(cell)
+                    is_frontier = True
+                    has_all_neighbors_known = False
                     break
+            
+            if is_frontier:
+                frontiers.add(cell)
+            elif has_all_neighbors_known:
+                # This cell has all neighbors known, no longer a candidate
+                non_frontier_candidates.add(cell)
+        
+        # Clean up candidate set - remove cells that are no longer at the boundary
+        self._frontier_candidates -= non_frontier_candidates
         
         if not frontiers:
             self._cached_frontiers = []
@@ -964,7 +1057,7 @@ class CoverageMapper:
 
         # OPTIMIZED Clustering using deque instead of list for O(1) popleft
         from collections import deque
-        frontier_list = frontiers  # Already a set, no need to convert
+        frontier_list = frontiers
         visited = set()
         clusters = []
 
@@ -976,7 +1069,7 @@ class CoverageMapper:
             visited.add(f)
             
             while queue:
-                current = queue.popleft()  # O(1) instead of O(n) for list.pop(0)
+                current = queue.popleft()
                 cluster.append(current)
                 cx, cy = current
                 for dx, dy in neighbor_offsets:
@@ -1331,30 +1424,42 @@ class CoverageMapper:
             print(f"Robot {robot.id}: Returning home with {len(robot.path)} waypoints")
 
     def calculate_coverage(self, use_cache=True):
-        """Calculate coverage percentage - OPTIMIZED with caching."""
+        """
+        Calculate coverage percentage - INCREMENTAL VERSION.
+        
+        Instead of iterating all explored cells every time, we:
+        1. Track which cells we've already validated
+        2. Only check NEW cells since last calculation
+        3. Maintain a running count of valid cells
+        
+        This changes O(n) to O(new_cells), typically O(100) instead of O(10,000).
+        """
         if self.total_free_cells == 0:
             return 0.0
 
-        # Cache check: if explored cells haven't changed significantly, return cached
+        # If no new cells, return cached value
         current_count = len(self.explored_cells)
-        if use_cache and self._coverage_cache_valid and current_count == self._coverage_explored_count:
+        if use_cache and current_count == len(self._processed_explored_cells):
             return self._cached_coverage
 
-        block_size = self.env.cell_size / 2.0
-        half_block = block_size / 2.0
-        inv_block_size = 1.0 / block_size  # Multiply is faster than divide
+        # Find cells we haven't processed yet
+        new_cells = self.explored_cells - self._processed_explored_cells
         
+        if not new_cells:
+            return self._cached_coverage
+        
+        # Pre-computed values from __init__
         maze_h, maze_w = self.env.maze_grid.shape
-        maze_grid = self.env.maze_grid  # Local reference
-        
-        # Pre-compute constants
+        maze_grid = self.env.maze_grid
         x_min = self.map_bounds['x_min']
         y_min = self.map_bounds['y_min']
         grid_res = self.grid_resolution
+        half_block = self._maze_half_block
+        inv_block_size = self._maze_inv_block_size
         
-        valid_explored_count = 0
-
-        for cell in self.explored_cells:
+        # Count valid cells among NEW cells only
+        new_valid_count = 0
+        for cell in new_cells:
             # Inline grid_to_world for speed
             wx = x_min + (cell[0] + 0.5) * grid_res
             wy = y_min + (cell[1] + 0.5) * grid_res
@@ -1364,9 +1469,13 @@ class CoverageMapper:
             
             if 0 <= mx < maze_w and 0 <= my < maze_h:
                 if maze_grid[my, mx] == 0:
-                    valid_explored_count += 1
-
-        coverage_percent = min(100.0, (valid_explored_count / self.total_free_cells) * 100)
+                    new_valid_count += 1
+        
+        # Update incremental count
+        self._incremental_valid_count += new_valid_count
+        self._processed_explored_cells.update(new_cells)
+        
+        coverage_percent = min(100.0, (self._incremental_valid_count / self.total_free_cells) * 100)
         
         # Update cache
         self._cached_coverage = coverage_percent
