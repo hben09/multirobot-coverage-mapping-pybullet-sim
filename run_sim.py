@@ -776,16 +776,10 @@ class CoverageMapper:
         self.direction_bias_weight = 2.5  # How much to reward forward motion
         self.size_weight = 0.3            # Weight for frontier size
         self.distance_weight = 1.0        # Weight for distance cost
-        self.volumetric_weight = 0.0      # Weight for volumetric gain (disabled for performance)
         
         # Coordination / Crowding weights (NEW)
         self.crowding_penalty_weight = 100.0  # Heavy penalty for targeting same area
         self.crowding_radius = 8.0           # Radius (meters) to discourage other robots
-        
-        # Volumetric gain estimation parameters
-        self.volumetric_num_rays = 36     # Number of rays to cast
-        self.volumetric_max_range = 8.0   # Max range for ray casting (meters)
-        self.volumetric_cache = {}        # Cache to avoid recalculating
         
         # Return-to-home settings
         self.return_home_coverage = 95.0  # Trigger return at this coverage %
@@ -1063,63 +1057,6 @@ class CoverageMapper:
         # so we just return the result.
         return path
     
-    def estimate_volumetric_gain(self, frontier_pos):
-        """
-        Estimate how much unknown space would be revealed from a frontier position.
-        
-        Casts rays from the frontier and counts unknown cells that would be seen.
-        This is inspired by GBPlanner's volumetric gain calculation.
-        
-        Args:
-            frontier_pos: (x, y) world coordinates of frontier
-            
-        Returns:
-            int: Estimated number of unknown cells that would be revealed
-        """
-        # Check cache first (frontier positions don't change much between calls)
-        cache_key = (round(frontier_pos[0], 1), round(frontier_pos[1], 1))
-        if cache_key in self.volumetric_cache:
-            return self.volumetric_cache[cache_key]
-        
-        unknown_count = 0
-        fx, fy = frontier_pos
-        
-        # Cast rays in all directions
-        for i in range(self.volumetric_num_rays):
-            angle = 2.0 * np.pi * i / self.volumetric_num_rays
-            cos_a = np.cos(angle)
-            sin_a = np.sin(angle)
-            
-            # Step along the ray
-            step_size = self.grid_resolution
-            for dist in np.arange(step_size, self.volumetric_max_range, step_size):
-                check_x = fx + dist * cos_a
-                check_y = fy + dist * sin_a
-                
-                # Check bounds
-                if not (self.map_bounds['x_min'] <= check_x <= self.map_bounds['x_max'] and
-                       self.map_bounds['y_min'] <= check_y <= self.map_bounds['y_max']):
-                    break
-                
-                cell = self.world_to_grid(check_x, check_y)
-                
-                # If we hit an obstacle, stop this ray
-                if cell in self.obstacle_cells:
-                    break
-                
-                # If cell is unknown, count it as potential gain
-                if cell not in self.occupancy_grid:
-                    unknown_count += 1
-        
-        # Cache the result
-        self.volumetric_cache[cache_key] = unknown_count
-        
-        return unknown_count
-
-    def clear_volumetric_cache(self):
-        """Clear the volumetric gain cache (call when map updates significantly)."""
-        self.volumetric_cache = {}
-
     def calculate_utility(self, robot, frontier):
         """
         Utility Function with Direction Bias and Volumetric Gain (GBPlanner-inspired)
@@ -1144,14 +1081,6 @@ class CoverageMapper:
         # Size gain
         size_gain = frontier['size'] * self.size_weight
         
-        # Volumetric gain (skip expensive calculation if weight is 0)
-        if self.volumetric_weight > 0:
-            volumetric_count = self.estimate_volumetric_gain(frontier['pos'])
-            volumetric_gain = volumetric_count * self.volumetric_weight
-        else:
-            volumetric_count = 0
-            volumetric_gain = 0.0
-        
         # Direction alignment bonus
         to_frontier = frontier_pos - robot_pos
         to_frontier_norm = np.linalg.norm(to_frontier)
@@ -1170,11 +1099,9 @@ class CoverageMapper:
             direction_bonus = 0.0
         
         # Final utility
-        utility = volumetric_gain + size_gain - distance_cost + direction_bonus
+        utility = size_gain - distance_cost + direction_bonus
         
         return utility, {
-            'volumetric_gain': volumetric_gain,
-            'volumetric_count': volumetric_count,
             'size_gain': size_gain,
             'distance_cost': distance_cost,
             'direction_bonus': direction_bonus,
@@ -1687,9 +1614,8 @@ class CoverageMapper:
         print("Starting multi-robot coverage mapping simulation...")
         print("*** IMPROVED LOGIC: SMART SCHEDULER + BLACKLISTING ***")
         print("*** PERFORMANCE MODE: INCREMENTAL FRONTIERS + OCTILE HEURISTIC ***")
-        print("*** DIRECTION BIAS + VOLUMETRIC GAIN + CROWDING PENALTY ENABLED ***")
+        print("*** DIRECTION BIAS + CROWDING PENALTY ENABLED ***")
         print(f"  - Direction weight: {self.direction_bias_weight}")
-        print(f"  - Volumetric weight: {self.volumetric_weight}")
         print(f"  - Crowding Penalty: {self.crowding_penalty_weight} (Radius: {self.crowding_radius}m)")
         
         if steps is None:
@@ -1817,9 +1743,6 @@ class CoverageMapper:
                 coverage = self.calculate_coverage()
                 self.coverage_history.append((step, coverage))
                 
-                # Clear volumetric cache periodically as map changes
-                if step % 100 == 0:
-                    self.clear_volumetric_cache()
             perf_stats['sensing'] += time.perf_counter() - t0
 
             # =================================================================
@@ -1910,7 +1833,6 @@ class CoverageMapper:
 def main():
     print("=" * 60)
     print("Multi-Robot Coverage Mapping")
-    print("IMPROVED VERSION (v2): Smart Scheduler + Blacklisting")
     print("=" * 60)
 
     # Maze configuration
