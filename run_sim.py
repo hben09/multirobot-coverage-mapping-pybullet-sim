@@ -26,7 +26,7 @@ import math
 import heapq
 from collections import defaultdict
 from map_generator import MapGenerator, PybulletRenderer
-from sim_logger import SimulationLogger
+from simulation_logger import SimulationLogger
 
 # Import the Robot class and MultiRobotMapper from the original file
 import sys
@@ -2283,7 +2283,7 @@ def main():
         render_input = input("\nRender video from log? (y/n, default=n): ").strip().lower()
         if render_input == 'y':
             try:
-                from video_renderer import render_video_from_log
+                from video_renderer_opencv import render_video_from_log
                 print("\nRendering video with OpenCV (fast parallel renderer)...")
                 render_video_from_log(log_filepath)
             except ImportError:
