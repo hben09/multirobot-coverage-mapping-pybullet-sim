@@ -25,7 +25,7 @@ import os
 import math
 import heapq
 from collections import defaultdict
-from map_generator import MapGenerator, PybulletRenderer
+from environment import MapGenerator, PybulletRenderer
 from sim_logger import SimulationLogger
 
 # Import the Robot class and MultiRobotMapper from the original file
