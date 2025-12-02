@@ -25,7 +25,7 @@ import os
 import math
 import heapq
 from collections import defaultdict
-from environment_generator import ProceduralEnvironment
+from map_generator import ProceduralEnvironment
 from simulation_logger import SimulationLogger
 
 # Import the Robot class and MultiRobotMapper from the original file
