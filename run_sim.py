@@ -35,221 +35,211 @@ sys.path.append(os.path.dirname(__file__))
 # =============================================================================
 # Numba JIT-compiled A* Pathfinding (6-18x faster than pure Python)
 # =============================================================================
-try:
-    from numba import njit
-    NUMBA_AVAILABLE = True
-    print("✓ Numba detected - A* pathfinding will be JIT-compiled for maximum speed")
-except ImportError:
-    NUMBA_AVAILABLE = False
-    print("⚠ Numba not installed - using pure Python A* (pip install numba for 6-18x speedup)")
+from numba import njit
+print("✓ Numba detected - A* pathfinding will be JIT-compiled for maximum speed")
 
 # =============================================================================
 # Numba-accelerated Occupancy Grid (for fast LIDAR processing)
 # =============================================================================
-try:
-    from numba_occupancy import NumbaOccupancyGrid, NUMBA_AVAILABLE as NUMBA_OCCUPANCY_AVAILABLE
-    print("✓ Numba occupancy grid loaded - LIDAR processing will be accelerated")
-except ImportError:
-    NUMBA_OCCUPANCY_AVAILABLE = False
-    print("⚠ numba_occupancy.py not found - using standard LIDAR processing")
+from numba_occupancy import NumbaOccupancyGrid
+print("✓ Numba occupancy grid loaded - LIDAR processing will be accelerated")
 
-if NUMBA_AVAILABLE:
-    @njit(cache=True)
-    def _numba_heuristic(ax, ay, bx, by):
-        """Octile distance heuristic - exact for 8-way movement."""
-        dx = abs(bx - ax)
-        dy = abs(by - ay)
-        if dx > dy:
-            return dx + 0.41421356 * dy
+@njit(cache=True)
+def _numba_heuristic(ax, ay, bx, by):
+    """Octile distance heuristic - exact for 8-way movement."""
+    dx = abs(bx - ax)
+    dy = abs(by - ay)
+    if dx > dy:
+        return dx + 0.41421356 * dy
+    else:
+        return dy + 0.41421356 * dx
+
+@njit(cache=True)
+def _numba_heap_push(heap, heap_size, f, x, y):
+    """Push item onto min-heap."""
+    idx = heap_size
+    heap[idx, 0] = f
+    heap[idx, 1] = x
+    heap[idx, 2] = y
+    
+    while idx > 0:
+        parent = (idx - 1) // 2
+        if heap[parent, 0] > heap[idx, 0]:
+            heap[parent, 0], heap[idx, 0] = heap[idx, 0], heap[parent, 0]
+            heap[parent, 1], heap[idx, 1] = heap[idx, 1], heap[parent, 1]
+            heap[parent, 2], heap[idx, 2] = heap[idx, 2], heap[parent, 2]
+            idx = parent
         else:
-            return dy + 0.41421356 * dx
+            break
+    
+    return heap_size + 1
 
-    @njit(cache=True)
-    def _numba_heap_push(heap, heap_size, f, x, y):
-        """Push item onto min-heap."""
-        idx = heap_size
-        heap[idx, 0] = f
-        heap[idx, 1] = x
-        heap[idx, 2] = y
+@njit(cache=True)
+def _numba_heap_pop(heap, heap_size):
+    """Pop minimum item from heap."""
+    if heap_size == 0:
+        return 0.0, -1, -1, 0
+    
+    f = heap[0, 0]
+    x = int(heap[0, 1])
+    y = int(heap[0, 2])
+    
+    heap_size -= 1
+    if heap_size > 0:
+        heap[0, 0] = heap[heap_size, 0]
+        heap[0, 1] = heap[heap_size, 1]
+        heap[0, 2] = heap[heap_size, 2]
         
-        while idx > 0:
-            parent = (idx - 1) // 2
-            if heap[parent, 0] > heap[idx, 0]:
-                heap[parent, 0], heap[idx, 0] = heap[idx, 0], heap[parent, 0]
-                heap[parent, 1], heap[idx, 1] = heap[idx, 1], heap[parent, 1]
-                heap[parent, 2], heap[idx, 2] = heap[idx, 2], heap[parent, 2]
-                idx = parent
+        idx = 0
+        while True:
+            left = 2 * idx + 1
+            right = 2 * idx + 2
+            smallest = idx
+            
+            if left < heap_size and heap[left, 0] < heap[smallest, 0]:
+                smallest = left
+            if right < heap_size and heap[right, 0] < heap[smallest, 0]:
+                smallest = right
+            
+            if smallest != idx:
+                heap[idx, 0], heap[smallest, 0] = heap[smallest, 0], heap[idx, 0]
+                heap[idx, 1], heap[smallest, 1] = heap[smallest, 1], heap[idx, 1]
+                heap[idx, 2], heap[smallest, 2] = heap[smallest, 2], heap[idx, 2]
+                idx = smallest
             else:
                 break
-        
-        return heap_size + 1
+    
+    return f, x, y, heap_size
 
-    @njit(cache=True)
-    def _numba_heap_pop(heap, heap_size):
-        """Pop minimum item from heap."""
-        if heap_size == 0:
-            return 0.0, -1, -1, 0
+@njit(cache=True)
+def _numba_astar_core(
+    grid, start_x, start_y, goal_x, goal_y,
+    grid_offset_x, grid_offset_y, use_inflation, max_iterations=50000
+):
+    """
+    Numba JIT-compiled A* core algorithm.
+    Grid values: 0=unknown, 1=free, 2=obstacle, 3=inflated
+    """
+    dx_arr = np.array([-1, -1, -1, 0, 0, 1, 1, 1], dtype=np.int32)
+    dy_arr = np.array([-1, 0, 1, -1, 1, -1, 0, 1], dtype=np.int32)
+    costs = np.array([1.41421356, 1.0, 1.41421356, 1.0, 1.0, 1.41421356, 1.0, 1.41421356], dtype=np.float64)
+    
+    height, width = grid.shape
+    
+    sx = start_x - grid_offset_x
+    sy = start_y - grid_offset_y
+    gx = goal_x - grid_offset_x
+    gy = goal_y - grid_offset_y
+    
+    if sx < 0 or sx >= width or sy < 0 or sy >= height:
+        return np.empty((0, 2), dtype=np.int32), False
+    if gx < 0 or gx >= width or gy < 0 or gy >= height:
+        return np.empty((0, 2), dtype=np.int32), False
+    
+    g_score = np.full((height, width), np.inf, dtype=np.float64)
+    g_score[sy, sx] = 0.0
+    
+    parent_dir = np.full((height, width), -1, dtype=np.int8)
+    closed = np.zeros((height, width), dtype=np.bool_)
+    
+    max_heap_size = height * width
+    heap = np.zeros((max_heap_size, 3), dtype=np.float64)
+    heap_size = 0
+    
+    f_start = _numba_heuristic(sx, sy, gx, gy)
+    heap_size = _numba_heap_push(heap, heap_size, f_start, float(sx), float(sy))
+    
+    iterations = 0
+    found = False
+    
+    while iterations < max_iterations and heap_size > 0:
+        iterations += 1
         
-        f = heap[0, 0]
-        x = int(heap[0, 1])
-        y = int(heap[0, 2])
+        _, cx, cy, heap_size = _numba_heap_pop(heap, heap_size)
         
-        heap_size -= 1
-        if heap_size > 0:
-            heap[0, 0] = heap[heap_size, 0]
-            heap[0, 1] = heap[heap_size, 1]
-            heap[0, 2] = heap[heap_size, 2]
+        if cx == -1:
+            break
+        
+        if closed[cy, cx]:
+            continue
+        
+        closed[cy, cx] = True
+        
+        if cx == gx and cy == gy:
+            found = True
+            break
+        
+        current_g = g_score[cy, cx]
+        
+        for i in range(8):
+            nx = cx + dx_arr[i]
+            ny = cy + dy_arr[i]
             
-            idx = 0
-            while True:
-                left = 2 * idx + 1
-                right = 2 * idx + 2
-                smallest = idx
-                
-                if left < heap_size and heap[left, 0] < heap[smallest, 0]:
-                    smallest = left
-                if right < heap_size and heap[right, 0] < heap[smallest, 0]:
-                    smallest = right
-                
-                if smallest != idx:
-                    heap[idx, 0], heap[smallest, 0] = heap[smallest, 0], heap[idx, 0]
-                    heap[idx, 1], heap[smallest, 1] = heap[smallest, 1], heap[idx, 1]
-                    heap[idx, 2], heap[smallest, 2] = heap[smallest, 2], heap[idx, 2]
-                    idx = smallest
-                else:
-                    break
-        
-        return f, x, y, heap_size
-
-    @njit(cache=True)
-    def _numba_astar_core(
-        grid, start_x, start_y, goal_x, goal_y,
-        grid_offset_x, grid_offset_y, use_inflation, max_iterations=50000
-    ):
-        """
-        Numba JIT-compiled A* core algorithm.
-        Grid values: 0=unknown, 1=free, 2=obstacle, 3=inflated
-        """
-        dx_arr = np.array([-1, -1, -1, 0, 0, 1, 1, 1], dtype=np.int32)
-        dy_arr = np.array([-1, 0, 1, -1, 1, -1, 0, 1], dtype=np.int32)
-        costs = np.array([1.41421356, 1.0, 1.41421356, 1.0, 1.0, 1.41421356, 1.0, 1.41421356], dtype=np.float64)
-        
-        height, width = grid.shape
-        
-        sx = start_x - grid_offset_x
-        sy = start_y - grid_offset_y
-        gx = goal_x - grid_offset_x
-        gy = goal_y - grid_offset_y
-        
-        if sx < 0 or sx >= width or sy < 0 or sy >= height:
-            return np.empty((0, 2), dtype=np.int32), False
-        if gx < 0 or gx >= width or gy < 0 or gy >= height:
-            return np.empty((0, 2), dtype=np.int32), False
-        
-        g_score = np.full((height, width), np.inf, dtype=np.float64)
-        g_score[sy, sx] = 0.0
-        
-        parent_dir = np.full((height, width), -1, dtype=np.int8)
-        closed = np.zeros((height, width), dtype=np.bool_)
-        
-        max_heap_size = height * width
-        heap = np.zeros((max_heap_size, 3), dtype=np.float64)
-        heap_size = 0
-        
-        f_start = _numba_heuristic(sx, sy, gx, gy)
-        heap_size = _numba_heap_push(heap, heap_size, f_start, float(sx), float(sy))
-        
-        iterations = 0
-        found = False
-        
-        while iterations < max_iterations and heap_size > 0:
-            iterations += 1
-            
-            _, cx, cy, heap_size = _numba_heap_pop(heap, heap_size)
-            
-            if cx == -1:
-                break
-            
-            if closed[cy, cx]:
+            if nx < 0 or nx >= width or ny < 0 or ny >= height:
                 continue
             
-            closed[cy, cx] = True
+            if closed[ny, nx]:
+                continue
             
-            if cx == gx and cy == gy:
-                found = True
-                break
+            cell_val = grid[ny, nx]
             
-            current_g = g_score[cy, cx]
+            if cell_val == 2:  # Obstacle
+                continue
             
-            for i in range(8):
-                nx = cx + dx_arr[i]
-                ny = cy + dy_arr[i]
-                
-                if nx < 0 or nx >= width or ny < 0 or ny >= height:
+            if cell_val == 0:  # Unknown
+                continue
+            
+            if use_inflation and cell_val == 3:
+                if not (nx == sx and ny == sy) and not (nx == gx and ny == gy):
                     continue
+            
+            # Diagonal corner check
+            if dx_arr[i] != 0 and dy_arr[i] != 0:
+                card1_x = cx + dx_arr[i]
+                card1_y = cy
+                card2_x = cx
+                card2_y = cy + dy_arr[i]
                 
-                if closed[ny, nx]:
-                    continue
-                
-                cell_val = grid[ny, nx]
-                
-                if cell_val == 2:  # Obstacle
-                    continue
-                
-                if cell_val == 0:  # Unknown
-                    continue
-                
-                if use_inflation and cell_val == 3:
-                    if not (nx == sx and ny == sy) and not (nx == gx and ny == gy):
+                if 0 <= card1_x < width and 0 <= card1_y < height:
+                    if grid[card1_y, card1_x] == 2:
                         continue
-                
-                # Diagonal corner check
-                if dx_arr[i] != 0 and dy_arr[i] != 0:
-                    card1_x = cx + dx_arr[i]
-                    card1_y = cy
-                    card2_x = cx
-                    card2_y = cy + dy_arr[i]
-                    
-                    if 0 <= card1_x < width and 0 <= card1_y < height:
-                        if grid[card1_y, card1_x] == 2:
-                            continue
-                    if 0 <= card2_x < width and 0 <= card2_y < height:
-                        if grid[card2_y, card2_x] == 2:
-                            continue
-                
-                new_g = current_g + costs[i]
-                
-                if new_g < g_score[ny, nx]:
-                    g_score[ny, nx] = new_g
-                    f = new_g + _numba_heuristic(nx, ny, gx, gy)
-                    parent_dir[ny, nx] = i
-                    heap_size = _numba_heap_push(heap, heap_size, f, float(nx), float(ny))
-        
-        if not found:
+                if 0 <= card2_x < width and 0 <= card2_y < height:
+                    if grid[card2_y, card2_x] == 2:
+                        continue
+            
+            new_g = current_g + costs[i]
+            
+            if new_g < g_score[ny, nx]:
+                g_score[ny, nx] = new_g
+                f = new_g + _numba_heuristic(nx, ny, gx, gy)
+                parent_dir[ny, nx] = i
+                heap_size = _numba_heap_push(heap, heap_size, f, float(nx), float(ny))
+    
+    if not found:
+        return np.empty((0, 2), dtype=np.int32), False
+    
+    # Count path length
+    path_len = 0
+    px, py = gx, gy
+    while not (px == sx and py == sy):
+        path_len += 1
+        d = parent_dir[py, px]
+        if d == -1:
             return np.empty((0, 2), dtype=np.int32), False
-        
-        # Count path length
-        path_len = 0
-        px, py = gx, gy
-        while not (px == sx and py == sy):
-            path_len += 1
-            d = parent_dir[py, px]
-            if d == -1:
-                return np.empty((0, 2), dtype=np.int32), False
-            px = px - dx_arr[d]
-            py = py - dy_arr[d]
-        
-        # Build path
-        path = np.empty((path_len, 2), dtype=np.int32)
-        px, py = gx, gy
-        for i in range(path_len - 1, -1, -1):
-            path[i, 0] = px + grid_offset_x
-            path[i, 1] = py + grid_offset_y
-            d = parent_dir[py, px]
-            px = px - dx_arr[d]
-            py = py - dy_arr[d]
-        
-        return path, True
+        px = px - dx_arr[d]
+        py = py - dy_arr[d]
+    
+    # Build path
+    path = np.empty((path_len, 2), dtype=np.int32)
+    px, py = gx, gy
+    for i in range(path_len - 1, -1, -1):
+        path[i, 0] = px + grid_offset_x
+        path[i, 1] = py + grid_offset_y
+        d = parent_dir[py, px]
+        px = px - dx_arr[d]
+        py = py - dy_arr[d]
+    
+    return path, True
 
 
 class NumbaAStarHelper:
@@ -265,7 +255,7 @@ class NumbaAStarHelper:
     
     def _warmup(self):
         """Pre-compile Numba functions."""
-        if self._warmed_up or not NUMBA_AVAILABLE:
+        if self._warmed_up:
             return
         test_grid = np.ones((10, 10), dtype=np.int8)
         _numba_astar_core(test_grid, 0, 0, 5, 5, 0, 0, True, 100)
@@ -796,10 +786,7 @@ class CoverageMapper:
         self.safety_margin = 1
         
         # Numba A* helper (for accelerated pathfinding)
-        if NUMBA_AVAILABLE:
-            self._numba_astar = NumbaAStarHelper()
-        else:
-            self._numba_astar = None
+        self._numba_astar = NumbaAStarHelper()
         
         # Performance optimization caches
         self._cached_coverage = 0.0
@@ -811,10 +798,7 @@ class CoverageMapper:
         self._grid_bounds = None  # Will be computed on first use
         
         # Numba-accelerated occupancy grid for fast LIDAR processing
-        if NUMBA_OCCUPANCY_AVAILABLE:
-            self._numba_occupancy = NumbaOccupancyGrid(self.map_bounds, self.grid_resolution)
-        else:
-            self._numba_occupancy = None
+        self._numba_occupancy = NumbaOccupancyGrid(self.map_bounds, self.grid_resolution)
         
         # Logging (initialized later if enabled)
         self.logger = None
@@ -897,74 +881,13 @@ class CoverageMapper:
         # Get recent scans (last 360 points to cover full circle)
         recent_scans = robot.lidar_data[-360:] if len(robot.lidar_data) > 360 else robot.lidar_data
         
-        # Use Numba-optimized grid if available
-        if self._numba_occupancy is not None:
-            self._numba_occupancy.update_from_lidar(
-                (pos[0], pos[1]),
-                recent_scans,
-                self.occupancy_grid,
-                self.explored_cells,
-                self.obstacle_cells
-            )
-        else:
-            # Fallback to original Python implementation
-            self._update_occupancy_grid_python(robot, recent_scans)
-    
-    def _update_occupancy_grid_python(self, robot, recent_scans):
-        """Original Python implementation as fallback."""
-        pos, _ = p.getBasePositionAndOrientation(robot.id)
-        
-        x_min = self.map_bounds['x_min']
-        y_min = self.map_bounds['y_min']
-        inv_res = 1.0 / self.grid_resolution
-        
-        robot_gx = int((pos[0] - x_min) * inv_res)
-        robot_gy = int((pos[1] - y_min) * inv_res)
-        robot_grid = (robot_gx, robot_gy)
-
-        occupancy = self.occupancy_grid
-        explored = self.explored_cells
-        obstacles = self.obstacle_cells
-        
-        occupancy[robot_grid] = 1
-        explored.add(robot_grid)
-
-        for hit_x, hit_y, is_hit in recent_scans:
-            obs_gx = int((hit_x - x_min) * inv_res)
-            obs_gy = int((hit_y - y_min) * inv_res)
-            obstacle_grid = (obs_gx, obs_gy)
-            
-            if is_hit:
-                occupancy[obstacle_grid] = 2
-                obstacles.add(obstacle_grid)
-
-            # Bresenham line trace
-            x0, y0 = robot_gx, robot_gy
-            x1, y1 = obs_gx, obs_gy
-            
-            dx = abs(x1 - x0)
-            dy = abs(y1 - y0)
-            sx = 1 if x0 < x1 else -1
-            sy = 1 if y0 < y1 else -1
-            err = dx - dy
-
-            x, y = x0, y0
-            while True:
-                cell = (x, y)
-                if cell not in obstacles:
-                    occupancy[cell] = 1
-                    explored.add(cell)
-
-                if x == x1 and y == y1:
-                    break
-
-                e2 = 2 * err
-                if e2 > -dy:
-                    err -= dy
-                    x += sx
-                if e2 < dx:
-                    err += dx
-                    y += sy
+        self._numba_occupancy.update_from_lidar(
+            (pos[0], pos[1]),
+            recent_scans,
+            self.occupancy_grid,
+            self.explored_cells,
+            self.obstacle_cells
+        )
 
     def bresenham_line(self, x0, y0, x1, y1):
         """Bresenham's line algorithm - kept for compatibility but inlined in update_occupancy_grid."""
@@ -1079,195 +1002,29 @@ class CoverageMapper:
     def plan_path_astar(self, start_grid, goal_grid):
         """
         A* Pathfinding on the occupancy grid.
-        Uses Numba JIT compilation for 6-18x speedup when available.
-        Falls back to pure Python implementation if Numba is not installed.
+        Uses Numba JIT compilation for 6-18x speedup.
         """
-        # Use Numba-accelerated A* if available
-        if self._numba_astar is not None:
-            self._numba_astar.update_grid(
-                self.occupancy_grid,
-                self.obstacle_cells,
-                self.safety_margin
-            )
-            path = self._numba_astar.plan_path(start_grid, goal_grid, use_inflation=True)
-            if path:
-                return path
-            # Numba version already tries without inflation as fallback
-            return []
+        self._numba_astar.update_grid(
+            self.occupancy_grid,
+            self.obstacle_cells,
+            self.safety_margin
+        )
+        path = self._numba_astar.plan_path(start_grid, goal_grid, use_inflation=True)
         
-        # Fallback: Pure Python A* (original implementation)
-        def heuristic(a, b):
-            return np.sqrt((b[0] - a[0])**2 + (b[1] - a[1])**2)
-
-        frontier = []
-        heapq.heappush(frontier, (0, start_grid))
-        came_from = {}
-        cost_so_far = {}
-        came_from[start_grid] = None
-        cost_so_far[start_grid] = 0
-        
-        # Pre-compute inflated obstacles (1-cell buffer around walls)
-        inflated_obstacles = set(self.obstacle_cells)
-        if self.safety_margin > 0:
-            for obs in self.obstacle_cells:
-                for dx in range(-self.safety_margin, self.safety_margin + 1):
-                    for dy in range(-self.safety_margin, self.safety_margin + 1):
-                        inflated_obstacles.add((obs[0] + dx, obs[1] + dy))
-        
-        def is_safe(cell, check_buffer=True):
-            """Check if cell is safe to traverse."""
-            if cell in self.obstacle_cells:
-                return False
-            if check_buffer and cell in inflated_obstacles:
-                if cell != start_grid and cell != goal_grid:
-                    return False
-            if cell not in self.occupancy_grid:
-                return False
-            return True
-        
-        def can_move_diagonal(current, dx, dy):
-            """Check if diagonal movement is valid."""
-            if abs(dx) == 1 and abs(dy) == 1:
-                cardinal1 = (current[0] + dx, current[1])
-                cardinal2 = (current[0], current[1] + dy)
-                if cardinal1 in self.obstacle_cells or cardinal2 in self.obstacle_cells:
-                    return False
-            return True
-
-        found = False
-        iterations = 0
-        max_iterations = 10000
-        
-        while frontier and iterations < max_iterations:
-            iterations += 1
-            current = heapq.heappop(frontier)[1]
-
-            if current == goal_grid:
-                found = True
-                break
-
-            for dx in [-1, 0, 1]:
-                for dy in [-1, 0, 1]:
-                    if dx == 0 and dy == 0:
-                        continue
-                    
-                    next_cell = (current[0] + dx, current[1] + dy)
-                    
-                    if not is_safe(next_cell, check_buffer=True):
-                        continue
-                    
-                    if not can_move_diagonal(current, dx, dy):
-                        continue
-
-                    new_cost = cost_so_far[current] + np.sqrt(dx*dx + dy*dy)
-                    if next_cell not in cost_so_far or new_cost < cost_so_far[next_cell]:
-                        cost_so_far[next_cell] = new_cost
-                        priority = new_cost + heuristic(goal_grid, next_cell)
-                        heapq.heappush(frontier, (priority, next_cell))
-                        came_from[next_cell] = current
-        
-        if not found:
-            return self._plan_path_astar_no_buffer(start_grid, goal_grid)
-            
-        path = []
-        curr = goal_grid
-        while curr != start_grid:
-            path.append(curr)
-            curr = came_from[curr]
-        path.reverse()
-        
-        if len(path) > 8:
-            path = path[::2]
-            if path[-1] != goal_grid:
-                path.append(goal_grid)
-                
+        # The Numba helper automatically tries without inflation as a fallback,
+        # so we just return the result.
         return path
     
     def _plan_path_astar_no_buffer(self, start_grid, goal_grid):
         """Fallback A* without obstacle inflation for tight spaces."""
-        # Use Numba version if available
-        if self._numba_astar is not None:
-            self._numba_astar.update_grid(
-                self.occupancy_grid,
-                self.obstacle_cells,
-                self.safety_margin
-            )
-            return self._numba_astar.plan_path(start_grid, goal_grid, use_inflation=False)
-        
-        # Fallback: Pure Python A*
-        def heuristic(a, b):
-            return np.sqrt((b[0] - a[0])**2 + (b[1] - a[1])**2)
-
-        frontier = []
-        heapq.heappush(frontier, (0, start_grid))
-        came_from = {}
-        cost_so_far = {}
-        came_from[start_grid] = None
-        cost_so_far[start_grid] = 0
-        
-        def is_safe(cell):
-            if cell in self.obstacle_cells:
-                return False
-            if cell not in self.occupancy_grid:
-                return False
-            return True
-        
-        def can_move_diagonal(current, dx, dy):
-            if abs(dx) == 1 and abs(dy) == 1:
-                cardinal1 = (current[0] + dx, current[1])
-                cardinal2 = (current[0], current[1] + dy)
-                if cardinal1 in self.obstacle_cells or cardinal2 in self.obstacle_cells:
-                    return False
-            return True
-
-        found = False
-        iterations = 0
-        max_iterations = 10000
-        
-        while frontier and iterations < max_iterations:
-            iterations += 1
-            current = heapq.heappop(frontier)[1]
-
-            if current == goal_grid:
-                found = True
-                break
-
-            for dx in [-1, 0, 1]:
-                for dy in [-1, 0, 1]:
-                    if dx == 0 and dy == 0:
-                        continue
-                    
-                    next_cell = (current[0] + dx, current[1] + dy)
-                    
-                    if not is_safe(next_cell):
-                        continue
-                    
-                    if not can_move_diagonal(current, dx, dy):
-                        continue
-
-                    new_cost = cost_so_far[current] + np.sqrt(dx*dx + dy*dy)
-                    if next_cell not in cost_so_far or new_cost < cost_so_far[next_cell]:
-                        cost_so_far[next_cell] = new_cost
-                        priority = new_cost + heuristic(goal_grid, next_cell)
-                        heapq.heappush(frontier, (priority, next_cell))
-                        came_from[next_cell] = current
-        
-        if not found:
-            return []
-            
-        path = []
-        curr = goal_grid
-        while curr != start_grid:
-            path.append(curr)
-            curr = came_from[curr]
-        path.reverse()
-        
-        if len(path) > 8:
-            path = path[::2]
-            if path[-1] != goal_grid:
-                path.append(goal_grid)
-                
-        return path
+        # This function is now just an alias for the main planner
+        # but explicitly without inflation.
+        self._numba_astar.update_grid(
+            self.occupancy_grid,
+            self.obstacle_cells,
+            self.safety_margin
+        )
+        return self._numba_astar.plan_path(start_grid, goal_grid, use_inflation=False)
 
     def estimate_volumetric_gain(self, frontier_pos):
         """
