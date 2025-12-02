@@ -1,21 +1,3 @@
-"""
-Multi-robot coverage mapping simulation for procedurally generated environments
-Uses the ProceduralEnvironment class from environment_generator to create mazes, caves, tunnels, and rooms
-
-IMPROVED VERSION (v2):
-1. SMART SCHEDULER: Re-plans immediately if robots are idle (no more 200-step delays).
-2. GOAL BLACKLISTING: Remembers unreachable frontiers to prevent infinite retry loops.
-3. SOFTER STUCK DETECTION: Increased tolerance for complex maneuvers.
-4. DIRECTION BIAS: Reduced oscillation.
-5. NUMBA JIT: Accelerated A* pathfinding.
-
-Architectural influences:
-1. MGG Planner: Bifurcated Local/Global state machine.
-2. GBPlanner: Frontier-based target generation with DIRECTION BIAS.
-3. AMET: Utility-based coordination (Size - Distance).
-4. NeBula: A* Pathfinding on risk/occupancy grid.
-"""
-
 import pybullet as p
 import pybullet_data
 import numpy as np
