@@ -782,7 +782,7 @@ class CoverageMapper:
         self.crowding_radius = 8.0           # Radius (meters) to discourage other robots
         
         # Return-to-home settings
-        self.return_home_coverage = 98.0  # Trigger return at this coverage %
+        self.return_home_coverage = 100.0  # Trigger return at this coverage %
         self.returning_home = False       # Global state: are we returning home?
         self.robots_home = set()          # Track which robots have arrived home
         
