@@ -1854,7 +1854,8 @@ def main():
     print("  3. Cave (organic cellular automata)")
     print("  4. Tunnel (long winding corridor)")
     print("  5. Rooms (dungeon with connected chambers)")
-    env_type_input = input("Choose environment type (1-5, default=1): ").strip()
+    print("  6. Sewer (grid of interconnected pipes)")  # <--- ADD THIS
+    env_type_input = input("Choose environment type (1-6, default=1): ").strip() # <--- UPDATE THIS
 
     if env_type_input == '2':
         env_type = 'blank_box'
@@ -1864,6 +1865,8 @@ def main():
         env_type = 'tunnel'
     elif env_type_input == '5':
         env_type = 'rooms'
+    elif env_type_input == '6':   # <--- ADD THIS BLOCK
+        env_type = 'sewer'        # <---
     else:
         env_type = 'maze'
 

@@ -51,6 +51,8 @@ class MapGenerator:
             self._generate_tunnel()
         elif env_type == 'rooms':
             self._generate_rooms()
+        elif env_type == 'sewer':
+            self._generate_sewer()
         else:
             self._generate_recursive_maze()
 
@@ -243,6 +245,60 @@ class MapGenerator:
         for y in range(0, first_room['y']):
             self.maze_grid[y, entrance_x] = 0
         self.entrance_cell = (entrance_x, 0)
+
+    def _generate_sewer(self):
+        """
+        Generates a sewer network: Long straight channels with intersections 
+        and random debris obstacles. Ensures all areas are reachable.
+        """
+        grid_height, grid_width = self.maze_grid.shape
+        self.maze_grid.fill(1)  # Start with all walls
+
+        # 1. Create a grid of channels
+        spacing_y = 4
+        spacing_x = 4
+
+        # Carve Horizontal Channels
+        for y in range(2, grid_height - 2, spacing_y):
+            # 80% chance a row exists
+            if random.random() < 0.80:
+                self.maze_grid[y, 1:-1] = 0
+                # Occasional "Wide" channels
+                if random.random() < 0.3 and y + 1 < grid_height - 1:
+                    self.maze_grid[y + 1, 1:-1] = 0
+
+        # Carve Vertical Connectors
+        for x in range(2, grid_width - 2, spacing_x):
+            # 70% chance a vertical pipe connects the rows
+            if random.random() < 0.70:
+                self.maze_grid[1:-1, x] = 0
+
+        # 2. Ensure Connectivity (Carve a central spine)
+        mid_x = grid_width // 2
+        mid_y = grid_height // 2
+        
+        self.maze_grid[1:-1, mid_x] = 0
+        self.maze_grid[mid_y, 1:-1] = 0
+
+        # 3. Add "Debris" (Single wall blocks inside the open pipes)
+        for y in range(1, grid_height - 1):
+            for x in range(1, grid_width - 1):
+                if self.maze_grid[y, x] == 0:
+                    # Keep the immediate entrance/center clear
+                    if abs(x - mid_x) < 3 or y < 3:
+                        continue
+                    
+                    # 5% chance to drop a block of debris
+                    if random.random() < 0.05:
+                        self.maze_grid[y, x] = 1
+
+        # 4. Clean up isolated pockets
+        # This fills in any areas that were cut off by debris or bad random generation
+        self._keep_largest_component(target_val=0)  # <--- NEW CRITICAL STEP
+
+        # 5. Set Entrance
+        self.entrance_cell = (mid_x, 0)
+        self.maze_grid[0:3, mid_x] = 0
 
     def _connect_points(self, r1, r2):
         """Draws an L-shaped corridor between two room centers."""
@@ -591,9 +647,17 @@ def get_user_input():
     print("  3. Cave (organic cellular automata)")
     print("  4. Tunnel (long winding corridor)")
     print("  5. Rooms (dungeon with connected chambers)")
-    env_type_input = input("Choose environment type (1-5, default=1): ").strip()
+    print("  6. Sewer (grid of interconnected pipes)")  # <--- ADD THIS LINE
+    env_type_input = input("Choose environment type (1-6, default=1): ").strip() # <--- UPDATE PROMPT
 
-    env_types = {'2': 'blank_box', '3': 'cave', '4': 'tunnel', '5': 'rooms'}
+    # Add '6': 'sewer' to the mapping dictionary
+    env_types = {
+        '2': 'blank_box', 
+        '3': 'cave', 
+        '4': 'tunnel', 
+        '5': 'rooms', 
+        '6': 'sewer'  # <--- ADD THIS LINE
+    }
     env_type = env_types.get(env_type_input, 'maze')
 
     # 5. GUI Toggle
