@@ -782,7 +782,7 @@ class CoverageMapper:
         self.crowding_radius = 8.0           # Radius (meters) to discourage other robots
         
         # Return-to-home settings
-        self.return_home_coverage = 95.0  # Trigger return at this coverage %
+        self.return_home_coverage = 98.0  # Trigger return at this coverage %
         self.returning_home = False       # Global state: are we returning home?
         self.robots_home = set()          # Track which robots have arrived home
         
@@ -1855,7 +1855,8 @@ def main():
     print("  4. Tunnel (long winding corridor)")
     print("  5. Rooms (dungeon with connected chambers)")
     print("  6. Sewer (grid of interconnected pipes)")  # <--- ADD THIS
-    env_type_input = input("Choose environment type (1-6, default=1): ").strip() # <--- UPDATE THIS
+    print("  7. Corridor Rooms (Central hall with attached rooms)") # <--- ADD THIS
+    env_type_input = input("Choose environment type (1-7, default=1): ").strip()
 
     if env_type_input == '2':
         env_type = 'blank_box'
@@ -1865,8 +1866,10 @@ def main():
         env_type = 'tunnel'
     elif env_type_input == '5':
         env_type = 'rooms'
-    elif env_type_input == '6':   # <--- ADD THIS BLOCK
-        env_type = 'sewer'        # <---
+    elif env_type_input == '6':
+        env_type = 'sewer'
+    elif env_type_input == '7':
+        env_type = 'corridor_rooms'
     else:
         env_type = 'maze'
 

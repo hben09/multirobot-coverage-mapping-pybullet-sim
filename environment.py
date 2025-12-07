@@ -53,6 +53,8 @@ class MapGenerator:
             self._generate_rooms()
         elif env_type == 'sewer':
             self._generate_sewer()
+        elif env_type == 'corridor_rooms':
+            self._generate_corridor_rooms()
         else:
             self._generate_recursive_maze()
 
@@ -299,6 +301,78 @@ class MapGenerator:
         # 5. Set Entrance
         self.entrance_cell = (mid_x, 0)
         self.maze_grid[0:3, mid_x] = 0
+
+    def _generate_corridor_rooms(self):
+        """
+        Generates a central wide corridor with rooms connected by narrow (1-cell) doorways.
+        Corrected to ensure walls exist on both sides before cutting doors.
+        """
+        grid_height, grid_width = self.maze_grid.shape
+        self.maze_grid.fill(1)  # Start with all walls
+
+        mid_x = grid_width // 2
+        
+        # 1. Create Central Corridor (3 cells wide: mid-1, mid, mid+1)
+        # The walls are located at [mid_x - 2] and [mid_x + 2]
+        self.maze_grid[1:-1, mid_x-1:mid_x+2] = 0
+
+        # 2. Place Rooms function
+        def place_rooms_on_side(is_left_side):
+            current_y = 2
+            
+            # Calculate max available width based on maze size
+            # Left side: from 1 to (mid_x - 3)
+            # Right side: from (mid_x + 3) to (width - 2)
+            if is_left_side:
+                max_room_w = mid_x - 4
+            else:
+                max_room_w = grid_width - (mid_x + 3) - 2
+
+            if max_room_w < 4:
+                return # Map too narrow for rooms
+
+            while current_y < grid_height - 5:
+                room_h = random.randint(4, 8)
+                room_w = random.randint(4, max(4, max_room_w))
+                
+                if current_y + room_h >= grid_height - 1:
+                    break
+                    
+                # 80% chance to spawn a room here
+                if random.random() < 0.8:
+                    if is_left_side:
+                        # Wall is at mid_x - 2. Room must end at mid_x - 3.
+                        room_x_end = mid_x - 2  # The index is exclusive in slicing
+                        room_x_start = max(1, room_x_end - room_w)
+                        
+                        # Carve Room (leaving wall at mid_x - 2 intact)
+                        self.maze_grid[current_y:current_y+room_h, room_x_start:room_x_end] = 0
+                        
+                        # Carve Doorway into the wall at mid_x - 2
+                        door_y = current_y + room_h // 2
+                        self.maze_grid[door_y, mid_x-2] = 0 
+                        
+                    else:
+                        # Wall is at mid_x + 2. Room must start at mid_x + 3.
+                        room_x_start = mid_x + 3
+                        room_x_end = min(grid_width - 1, room_x_start + room_w)
+                        
+                        # Carve Room (leaving wall at mid_x + 2 intact)
+                        self.maze_grid[current_y:current_y+room_h, room_x_start:room_x_end] = 0
+                        
+                        # Carve Doorway into the wall at mid_x + 2
+                        door_y = current_y + room_h // 2
+                        self.maze_grid[door_y, mid_x+2] = 0
+                
+                current_y += room_h + 2  # Gap between rooms
+
+        # 3. Generate rooms
+        place_rooms_on_side(is_left_side=True)
+        place_rooms_on_side(is_left_side=False)
+
+        # 4. Set Entrance
+        self.entrance_cell = (mid_x, 0)
+        self.maze_grid[0:2, mid_x] = 0
 
     def _connect_points(self, r1, r2):
         """Draws an L-shaped corridor between two room centers."""
@@ -648,7 +722,8 @@ def get_user_input():
     print("  4. Tunnel (long winding corridor)")
     print("  5. Rooms (dungeon with connected chambers)")
     print("  6. Sewer (grid of interconnected pipes)")  # <--- ADD THIS LINE
-    env_type_input = input("Choose environment type (1-6, default=1): ").strip() # <--- UPDATE PROMPT
+    print("  7. Corridor Rooms (Central hall with attached rooms)") # <--- ADD THIS
+    env_type_input = input("Choose environment type (1-7, default=1): ").strip()
 
     # Add '6': 'sewer' to the mapping dictionary
     env_types = {
@@ -656,7 +731,8 @@ def get_user_input():
         '3': 'cave', 
         '4': 'tunnel', 
         '5': 'rooms', 
-        '6': 'sewer'  # <--- ADD THIS LINE
+        '6': 'sewer',
+        '7': 'corridor_rooms'
     }
     env_type = env_types.get(env_type_input, 'maze')
 
