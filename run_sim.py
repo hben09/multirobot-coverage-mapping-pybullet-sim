@@ -1839,11 +1839,11 @@ def main():
     maze_size_input = input("\nEnter maze size (e.g., '10' for 10x10, default=10): ").strip()
     maze_size = int(maze_size_input) if maze_size_input.isdigit() else 10
 
-    cell_size_input = input("Enter cell size in meters (default=2.0): ").strip()
+    cell_size_input = input("Enter cell size in meters (default=10.0): ").strip()
     try:
         cell_size = float(cell_size_input)
     except:
-        cell_size = 2.0
+        cell_size = 10.0
 
     seed_input = input("Enter random seed (press Enter for random): ").strip()
     env_seed = int(seed_input) if seed_input.isdigit() else None
