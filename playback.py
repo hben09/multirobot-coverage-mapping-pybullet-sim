@@ -17,7 +17,7 @@ import sys
 
 # Import the logger to use its reconstruction logic
 try:
-    from simulation_logger import SimulationLogger
+    from sim_logger import SimulationLogger
 except ImportError:
     print("Error: simulation_logger.py must be in the same directory.")
     sys.exit(1)
