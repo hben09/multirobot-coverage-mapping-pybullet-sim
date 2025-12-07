@@ -1028,7 +1028,7 @@ class CoverageMapper:
                         queue.append(nbr)
             
             # Filter small noise
-            if len(cluster) > 2:
+            if len(cluster) > 6:
                 # Find the member of the cluster closest to the mathematical centroid
                 avg_x = sum(c[0] for c in cluster) / len(cluster)
                 avg_y = sum(c[1] for c in cluster) / len(cluster)
