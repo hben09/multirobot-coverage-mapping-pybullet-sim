@@ -9,6 +9,7 @@ from environment import MapGenerator, PybulletRenderer
 from sim_logger import SimulationLogger
 from robot import Robot
 from pathfinding import NumbaAStarHelper
+from numba_occupancy import NumbaOccupancyGrid
 
 
 
