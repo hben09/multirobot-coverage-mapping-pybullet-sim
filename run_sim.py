@@ -417,7 +417,7 @@ class CoverageMapper:
         if not frontiers:
             return
 
-        active_robots = [r for r in self.robots if not r.manual_control]
+        active_robots = self.robots
         for robot in active_robots:
              robot.mode = 'GLOBAL_RELOCATE'
              robot.cleanup_blacklist(step)
@@ -502,11 +502,6 @@ class CoverageMapper:
                 loser_robot.path = []
 
     def exploration_logic(self, robot, step):
-        if robot.manual_control:
-            l, a = robot.follow_path(self) 
-            robot.move(l, a)
-            return
-        
         if robot.mode == 'HOME':
             robot.move(0.0, 0.0)
             return
@@ -616,9 +611,8 @@ class CoverageMapper:
             'coverage': self.realtime_fig.add_subplot(gs[1, :])
         }
 
-        title = 'Multi-Robot Coverage Mapping\n(Scroll to Zoom, Click for manual control, "P" to toggle decomposition)'
+        title = 'Multi-Robot Coverage Mapping\n(Scroll to Zoom, "P" to toggle decomposition)'
         self.realtime_fig.suptitle(title, fontsize=14, fontweight='bold')
-        self.realtime_fig.canvas.mpl_connect('button_press_event', self.on_map_click)
         self.realtime_fig.canvas.mpl_connect('scroll_event', self.on_scroll)
         self.realtime_fig.canvas.mpl_connect('key_press_event', self.on_key_press)
         plt.show(block=False)
@@ -658,23 +652,6 @@ class CoverageMapper:
 
         self.current_xlim = [xdata - new_width * (1 - relx), xdata + new_width * relx]
         self.current_ylim = [ydata - new_height * (1 - rely), ydata + new_height * rely]
-
-    def on_map_click(self, event):
-        if event.inaxes == self.realtime_axes['grid']:
-            x, y = event.xdata, event.ydata
-            if (self.map_bounds['x_min'] <= x <= self.map_bounds['x_max'] and
-                self.map_bounds['y_min'] <= y <= self.map_bounds['y_max']):
-                
-                self.robots[0].goal = (x, y)
-                self.robots[0].manual_control = True
-                
-                pos, _ = p.getBasePositionAndOrientation(self.robots[0].id)
-                start = self.world_to_grid(pos[0], pos[1])
-                end = self.world_to_grid(x, y)
-                
-                print(f"Planning path to ({x:.2f}, {y:.2f})...")
-                self.robots[0].path = self.plan_path_astar(start, end)
-                print(f"Path found: {len(self.robots[0].path)} steps")
 
     def update_realtime_visualization(self, step):
         if self.realtime_fig is None:
@@ -926,8 +903,8 @@ class CoverageMapper:
                 break
 
             t0 = time.perf_counter()
-            
-            active_robots = [r for r in robots if not r.manual_control]
+
+            active_robots = robots
             any_idle = any(r.goal is None for r in active_robots)
             
             should_plan = (step % 50 == 0) or (any_idle and step % 5 == 0)

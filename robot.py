@@ -21,7 +21,6 @@ class Robot:
         # 3. Autonomy state
         self.goal = None
         self.path = []
-        self.manual_control = False
         self.mode = 'IDLE'
 
         # 4. Goal management
