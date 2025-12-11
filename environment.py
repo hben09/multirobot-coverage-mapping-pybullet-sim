@@ -432,7 +432,6 @@ class PybulletRenderer:
         self.gui = gui
 
         self.wall_ids = []
-        self.robot_ids = []
         self.entrance_position = None
 
         self._init_pybullet()
@@ -555,7 +554,7 @@ class PybulletRenderer:
         p.changeDynamics(floor_id, -1, lateralFriction=0.8)
         self.wall_ids.append(floor_id)
 
-    # === ROBOT SPAWNING ===
+    # === UTILITY METHODS ===
 
     def get_spawn_position(self):
         if self.entrance_cell is None:
@@ -568,51 +567,6 @@ class PybulletRenderer:
 
         self.entrance_position = (world_x, world_y, world_z)
         return self.entrance_position
-
-    def spawn_robot(self, robot_urdf="r2d2.urdf", position=None, orientation=None):
-        if position is None:
-            position = self.get_spawn_position()
-        if orientation is None:
-            orientation = p.getQuaternionFromEuler([0, 0, np.pi / 2])
-
-        try:
-            robot_id = p.loadURDF(robot_urdf, position, orientation)
-        except Exception as e:
-            print(f"Could not load {robot_urdf}, creating simple robot: {e}")
-            robot_id = self._create_simple_robot(position, orientation)
-
-        self.robot_ids.append(robot_id)
-        return robot_id
-
-    def _create_simple_robot(self, position, orientation):
-        robot_size = [0.3, 0.2, 0.15]
-        robot_color = [0.2, 0.6, 0.8, 1.0]
-        collision_shape = p.createCollisionShape(p.GEOM_BOX, halfExtents=robot_size)
-        visual_shape = p.createVisualShape(p.GEOM_BOX, halfExtents=robot_size, rgbaColor=robot_color)
-        robot_id = p.createMultiBody(
-            baseMass=1.0,
-            baseCollisionShapeIndex=collision_shape,
-            baseVisualShapeIndex=visual_shape,
-            basePosition=position,
-            baseOrientation=orientation
-        )
-        return robot_id
-
-    def spawn_multi_robots(self, num_robots, robot_urdf="r2d2.urdf", spacing=1.0):
-        base_position = self.get_spawn_position()
-        robot_ids = []
-        for i in range(num_robots):
-            offset_x = (i - num_robots / 2) * spacing
-            position = (
-                base_position[0] + offset_x,
-                base_position[1] - i * spacing * 0.5,
-                base_position[2]
-            )
-            robot_id = self.spawn_robot(robot_urdf, position)
-            robot_ids.append(robot_id)
-        return robot_ids
-
-    # === UTILITY METHODS ===
 
     def get_free_cells(self):
         free_cells = []
@@ -642,7 +596,7 @@ class PybulletRenderer:
         if len(valid_cells) < num_markers:
             valid_cells = free_cells
         marker_positions = random.sample(valid_cells, min(num_markers, len(valid_cells)))
-        for i, (mx, my) in enumerate(marker_positions):
+        for mx, my in marker_positions:
             marker_color = [random.uniform(0.5, 1.0), random.uniform(0.5, 1.0), random.uniform(0.2, 0.5), 1.0]
             visual_shape = p.createVisualShape(p.GEOM_SPHERE, radius=0.15, rgbaColor=marker_color)
             p.createMultiBody(baseMass=0, baseVisualShapeIndex=visual_shape, basePosition=[mx, my, 0.15])
@@ -762,12 +716,7 @@ def setup_environment(config):
     print("\nBuilding walls in PyBullet (Optimized Merging)...")
     env.build_walls()
 
-    # 5. Spawn robots
-    print("\nSpawning robots at entrance...")
-    robot_ids = env.spawn_multi_robots(num_robots=3, spacing=1.5)
-    print(f"Spawned {len(robot_ids)} robots with IDs: {robot_ids}")
-
-    # 6. Add exploration targets
+    # 5. Add exploration targets
     print("\nAdding exploration markers...")
     markers = env.add_exploration_markers(num_markers=5)
     print(f"Placed {len(markers)} markers")
