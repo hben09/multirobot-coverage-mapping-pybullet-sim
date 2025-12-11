@@ -847,11 +847,6 @@ class CoverageMapper:
         Run the simulation with configurable visualization and logging.
         """
         print("Starting multi-robot coverage mapping simulation...")
-        print("*** IMPROVED LOGIC: SMART SCHEDULER + BLACKLISTING ***")
-        print("*** PERFORMANCE MODE: INCREMENTAL FRONTIERS + OCTILE HEURISTIC ***")
-        print("*** DIRECTION BIAS + CROWDING PENALTY ENABLED ***")
-        print(f"  - Direction weight: {self.direction_bias_weight}")
-        print(f"  - Crowding Penalty: {self.crowding_penalty_weight} (Radius: {self.crowding_radius}m)")
         
         if steps is None:
             print("Running unlimited steps (press Ctrl+C to stop)...")
