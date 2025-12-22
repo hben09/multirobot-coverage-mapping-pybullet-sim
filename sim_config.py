@@ -24,7 +24,8 @@ ENV_TYPE = 'corridor_rooms'
 USE_GUI = False
 
 # Show rectangular decomposition visualization (True/False)
-SHOW_PARTITIONS = False
+# NOTE: Only visible in 'realtime' or 'both' visualization modes (not in videos yet)
+SHOW_PARTITIONS = True
 
 # Number of robots (1-16)
 NUM_ROBOTS = 3
@@ -33,10 +34,10 @@ NUM_ROBOTS = 3
 MAX_STEPS = None
 
 # Visualization mode: 'realtime', 'logging', 'both', 'none'
-VIZ_MODE = 'logging'
+VIZ_MODE = 'realtime'
 
 # Automatically render video after simulation (True/False)
-RENDER_VIDEO = True
+RENDER_VIDEO = False
 
 # ============================================================
 

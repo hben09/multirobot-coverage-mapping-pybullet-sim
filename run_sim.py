@@ -11,75 +11,7 @@ from robot import Robot
 from pathfinding import NumbaAStarHelper
 from numba_occupancy import NumbaOccupancyGrid
 from sim_config import get_simulation_config, print_config
-
-
-
-
-def decompose_grid_to_rectangles(occupancy_grid, max_rects=None):
-    """
-    Decomposes free space into rectangles and optionally returns only the top N largest.
-    """
-    if not occupancy_grid:
-        return []
-    
-    # Filter only free cells to find bounds
-    free_cells = [k for k, v in occupancy_grid.items() if v == 1]
-    if not free_cells:
-        return []
-        
-    xs = [c[0] for c in free_cells]
-    ys = [c[1] for c in free_cells]
-    min_x, max_x = min(xs), max(xs)
-    min_y, max_y = min(ys), max(ys)
-    
-    w = max_x - min_x + 1
-    h = max_y - min_y + 1
-    
-    # Build dense boolean grid (True = Free)
-    grid = np.zeros((h, w), dtype=bool)
-    for (gx, gy) in free_cells:
-        grid[gy - min_y, gx - min_x] = True
-            
-    # Decompose
-    rects = []
-    remaining = grid
-    
-    while True:
-        # Find first True cell
-        coords = np.argwhere(remaining)
-        if len(coords) == 0:
-            break
-        r, c = coords[0]
-        
-        # Expand Width
-        current_w = 1
-        while c + current_w < w and remaining[r, c + current_w]:
-            current_w += 1
-            
-        # Expand Height
-        current_h = 1
-        while r + current_h < h:
-            # Check if whole row segment is free
-            if not np.all(remaining[r + current_h, c : c + current_w]):
-                break
-            current_h += 1
-            
-        # Store rect (gx, gy, w, h)
-        rects.append((c + min_x, r + min_y, current_w, current_h))
-        
-        # Mark as visited
-        remaining[r : r + current_h, c : c + current_w] = False
-
-    # --- NEW LOGIC: Sort and Limit ---
-    if max_rects is not None:
-        # Sort by Area (Width * Height) in descending order
-        rects.sort(key=lambda r: r[2] * r[3], reverse=True)
-        return rects[:max_rects]
-        
-    return rects
-
-
-
+from spatial_decomposition import decompose_grid_to_rectangles
 
 class CoverageMapper:
     """Multi-robot coverage mapper for procedurally generated environments"""
