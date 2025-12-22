@@ -9,15 +9,16 @@ from robot import Robot
 from pathfinding import NumbaAStarHelper
 from numba_occupancy import NumbaOccupancyGrid
 from sim_config import get_simulation_config, print_config
+import sim_config as cfg
 from realtime_visualizer import RealtimeVisualizer
 
 class CoverageMapper:
     """Multi-robot coverage mapper for procedurally generated environments"""
 
-    def __init__(self, use_gui=True, maze_size=(10, 10), cell_size=2.0, env_seed=None, env_type='maze', num_robots=3, show_partitions=False):
+    def __init__(self, use_gui=True, maze_size=(10, 10), cell_size=2.0, env_seed=None, env_type='maze', num_robots=3, show_partitions=False, grid_resolution=0.5):
         self.num_robots = num_robots
         self.show_partitions = show_partitions  # Flag for rectangular decomposition
-        
+
         # Generate the maze grid first
         map_generator = MapGenerator(
             maze_size=maze_size,
@@ -40,7 +41,7 @@ class CoverageMapper:
         self.robots = []
         self.create_robots()
 
-        self.grid_resolution = 0.5
+        self.grid_resolution = grid_resolution
         self.occupancy_grid = {}  # 1=Free, 2=Obstacle
         self.explored_cells = set()
         self.obstacle_cells = set()
@@ -67,23 +68,23 @@ class CoverageMapper:
 
         # Real-time visualization
         self.visualizer = RealtimeVisualizer(self)
-        
-        # Utility function weights
-        self.direction_bias_weight = 2.5  # How much to reward forward motion
-        self.size_weight = 0.3            # Weight for frontier size
-        self.distance_weight = 1.0        # Weight for distance cost
-        
-        # Coordination / Crowding weights (NEW)
-        self.crowding_penalty_weight = 100.0  # Heavy penalty for targeting same area
-        self.crowding_radius = 8.0           # Radius (meters) to discourage other robots
-        
-        # Return-to-home settings
-        self.return_home_coverage = 100.0  # Trigger return at this coverage %
-        self.returning_home = False       # Global state: are we returning home?
-        self.robots_home = set()          # Track which robots have arrived home
-        
-        # Safety margin
-        self.safety_margin = 1
+
+        # Utility function weights (from config)
+        self.direction_bias_weight = cfg.DIRECTION_BIAS_WEIGHT
+        self.size_weight = cfg.SIZE_WEIGHT
+        self.distance_weight = cfg.DISTANCE_WEIGHT
+
+        # Coordination / Crowding weights (from config)
+        self.crowding_penalty_weight = cfg.CROWDING_PENALTY_WEIGHT
+        self.crowding_radius = cfg.CROWDING_RADIUS
+
+        # Return-to-home settings (from config)
+        self.return_home_coverage = cfg.RETURN_HOME_COVERAGE
+        self.returning_home = False
+        self.robots_home = set()
+
+        # Safety margin (from config)
+        self.safety_margin = cfg.SAFETY_MARGIN
         
         # Numba A* helper
         self._numba_astar = NumbaAStarHelper()
@@ -145,26 +146,29 @@ class CoverageMapper:
         ]
         
         start_positions = []
-        spacing = 1.5
+        spacing = cfg.ROBOT_SPACING
         for i in range(self.num_robots):
             offset = (i - (self.num_robots - 1) / 2) * spacing
-            start_positions.append([spawn_pos[0] + offset, spawn_pos[1], 0.25])
-        
+            start_positions.append([spawn_pos[0] + offset, spawn_pos[1], cfg.ROBOT_HEIGHT])
+
         colors = [all_colors[i % len(all_colors)] for i in range(self.num_robots)]
 
         for i, (pos, color) in enumerate(zip(start_positions, colors)):
-            collision_shape = p.createCollisionShape(p.GEOM_SPHERE, radius=0.25)
-            visual_shape = p.createVisualShape(p.GEOM_SPHERE, radius=0.25, rgbaColor=color)
+            collision_shape = p.createCollisionShape(p.GEOM_SPHERE, radius=cfg.ROBOT_RADIUS)
+            visual_shape = p.createVisualShape(p.GEOM_SPHERE, radius=cfg.ROBOT_RADIUS, rgbaColor=color)
 
             robot_id = p.createMultiBody(
-                baseMass=1.0,
+                baseMass=cfg.ROBOT_MASS,
                 baseCollisionShapeIndex=collision_shape,
                 baseVisualShapeIndex=visual_shape,
                 basePosition=pos
             )
 
             p.changeDynamics(robot_id, -1, localInertiaDiagonal=[0, 0, 1])
-            p.changeDynamics(robot_id, -1, lateralFriction=1.0, spinningFriction=0.1, rollingFriction=0.0)
+            p.changeDynamics(robot_id, -1,
+                           lateralFriction=cfg.LATERAL_FRICTION,
+                           spinningFriction=cfg.SPINNING_FRICTION,
+                           rollingFriction=cfg.ROLLING_FRICTION)
 
             robot = Robot(robot_id, pos, color)
             self.robots.append(robot)
@@ -529,8 +533,8 @@ class CoverageMapper:
         self._coverage_cache_valid = False
 
 
-    def run_simulation(self, steps=5000, scan_interval=10, use_gui=True, realtime_viz=True, 
-                       viz_update_interval=50, viz_mode='realtime', log_path='./logs'):
+    def run_simulation(self, steps=5000, scan_interval=10, use_gui=True, realtime_viz=True,
+                       viz_update_interval=50, viz_mode='realtime', log_path='./logs', performance_report_interval=3.0):
         """
         Run the simulation with configurable visualization and logging.
         """
@@ -573,7 +577,7 @@ class CoverageMapper:
         start_time = time.perf_counter()
         last_report_time = start_time
         last_report_step = 0
-        report_interval_seconds = 3.0
+        report_interval_seconds = performance_report_interval
         
         perf_stats = defaultdict(float)
         
@@ -624,7 +628,7 @@ class CoverageMapper:
             t0 = time.perf_counter()
             if step % scan_interval == 0:
                 for robot in robots:
-                    robot.get_lidar_scan(num_rays=90, max_range=15)
+                    robot.get_lidar_scan(num_rays=cfg.LIDAR_NUM_RAYS, max_range=cfg.LIDAR_MAX_RANGE)
                     self.update_occupancy_grid(robot)
                     
                     if robot.mode != 'HOME':
@@ -711,33 +715,35 @@ class CoverageMapper:
 
 
 def main():
-    # Get configuration from user prompts
-    config = get_simulation_config()
+    # Get user configuration (environment, visualization settings)
+    user_config = get_simulation_config()
 
     # Print configuration summary
-    print_config(config)
+    print_config(user_config)
 
     # Create mapper with configuration
     mapper = CoverageMapper(
-        use_gui=config['use_gui'],
-        maze_size=(config['maze_size'], config['maze_size']),
-        cell_size=config['cell_size'],
-        env_seed=config['env_seed'],
-        env_type=config['env_type'],
-        num_robots=config['num_robots'],
-        show_partitions=config['show_partitions']
+        use_gui=user_config['use_gui'],
+        maze_size=(user_config['maze_size'], user_config['maze_size']),
+        cell_size=user_config['cell_size'],
+        env_seed=user_config['env_seed'],
+        env_type=user_config['env_type'],
+        num_robots=user_config['num_robots'],
+        show_partitions=user_config['show_partitions'],
+        grid_resolution=user_config['grid_resolution']
     )
 
     log_filepath = None
 
     try:
         log_filepath = mapper.run_simulation(
-            steps=config['max_steps'],
-            scan_interval=10,
-            use_gui=config['use_gui'],
-            viz_mode=config['viz_mode'],
-            viz_update_interval=50,
-            log_path='./logs'
+            steps=user_config['max_steps'],
+            scan_interval=user_config['scan_interval'],
+            use_gui=user_config['use_gui'],
+            viz_mode=user_config['viz_mode'],
+            viz_update_interval=user_config['viz_update_interval'],
+            log_path='./logs',
+            performance_report_interval=user_config['performance_report_interval']
         )
 
     except KeyboardInterrupt:
@@ -753,7 +759,7 @@ def main():
         print("PyBullet disconnected")
 
     # Handle video rendering
-    if log_filepath is not None and config['render_video']:
+    if log_filepath is not None and user_config['render_video']:
         try:
             from video_renderer import render_video_from_log
             print("\nRendering video with OpenCV (fast parallel renderer)...")

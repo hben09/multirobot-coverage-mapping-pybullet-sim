@@ -40,6 +40,51 @@ VIZ_MODE = 'realtime'
 RENDER_VIDEO = False
 
 # ============================================================
+# ALGORITHM PARAMETERS
+# Advanced settings for exploration and coordination algorithms
+# ============================================================
+
+# Grid resolution in meters (smaller = more detailed but slower)
+GRID_RESOLUTION = 0.5
+
+# Utility function weights for frontier selection
+DIRECTION_BIAS_WEIGHT = 2.5  # How much to reward forward motion (0-5)
+SIZE_WEIGHT = 0.3            # Weight for frontier size (0-1)
+DISTANCE_WEIGHT = 1.0        # Weight for distance cost (0-2)
+
+# Multi-robot coordination parameters
+CROWDING_PENALTY_WEIGHT = 100.0  # Penalty for targeting same area as other robots
+CROWDING_RADIUS = 8.0            # Radius (meters) to discourage other robots
+
+# Return-to-home settings
+RETURN_HOME_COVERAGE = 100.0  # Trigger return home at this coverage percentage (0-100)
+
+# Pathfinding safety margin
+SAFETY_MARGIN = 1  # Grid cells to inflate obstacles for safe navigation
+
+# Robot spawning spacing
+ROBOT_SPACING = 1.5  # Distance (meters) between robots at spawn
+
+# Robot physical parameters
+ROBOT_RADIUS = 0.25       # Robot sphere radius (meters)
+ROBOT_MASS = 1.0          # Robot mass (kg)
+ROBOT_HEIGHT = 0.25       # Robot spawn height (meters)
+
+# Robot dynamics
+LATERAL_FRICTION = 1.0
+SPINNING_FRICTION = 0.1
+ROLLING_FRICTION = 0.0
+
+# LIDAR sensor parameters
+LIDAR_NUM_RAYS = 90       # Number of LIDAR rays
+LIDAR_MAX_RANGE = 15.0    # Maximum LIDAR range (meters)
+
+# Simulation timing
+SCAN_INTERVAL = 10              # Steps between LIDAR scans
+VIZ_UPDATE_INTERVAL = 50        # Steps between visualization updates
+PERFORMANCE_REPORT_INTERVAL = 3.0  # Seconds between performance reports
+
+# ============================================================
 
 
 def get_simulation_config(use_prompts=False):
@@ -144,7 +189,11 @@ def get_simulation_config(use_prompts=False):
             'num_robots': num_robots,
             'max_steps': max_steps,
             'viz_mode': viz_mode,
-            'render_video': render_video
+            'render_video': render_video,
+            'grid_resolution': GRID_RESOLUTION,
+            'scan_interval': SCAN_INTERVAL,
+            'viz_update_interval': VIZ_UPDATE_INTERVAL,
+            'performance_report_interval': PERFORMANCE_REPORT_INTERVAL
         }
     else:
         # Use configuration variables from this file
@@ -158,7 +207,11 @@ def get_simulation_config(use_prompts=False):
             'num_robots': NUM_ROBOTS,
             'max_steps': MAX_STEPS,
             'viz_mode': VIZ_MODE,
-            'render_video': RENDER_VIDEO
+            'render_video': RENDER_VIDEO,
+            'grid_resolution': GRID_RESOLUTION,
+            'scan_interval': SCAN_INTERVAL,
+            'viz_update_interval': VIZ_UPDATE_INTERVAL,
+            'performance_report_interval': PERFORMANCE_REPORT_INTERVAL
         }
 
 
@@ -179,7 +232,11 @@ def get_default_config():
         'num_robots': 3,
         'max_steps': None,
         'viz_mode': 'realtime',
-        'render_video': False
+        'render_video': False,
+        'grid_resolution': GRID_RESOLUTION,
+        'scan_interval': SCAN_INTERVAL,
+        'viz_update_interval': VIZ_UPDATE_INTERVAL,
+        'performance_report_interval': PERFORMANCE_REPORT_INTERVAL
     }
 
 
