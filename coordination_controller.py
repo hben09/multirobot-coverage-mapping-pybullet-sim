@@ -122,7 +122,7 @@ class CoordinationController:
 
                 # Plan path if needed
                 if should_replan:
-                    robot.stuck_detector.reset(robot.state, robot.hardware)
+                    robot.stuck_detector.reset(robot.state, robot.driver)
                     robot.state.goal_attempts = 0
 
                     # Get current position and plan path
@@ -163,7 +163,7 @@ class CoordinationController:
         robot.state.path = plan_path_fn(start_grid, home_grid)
         if robot.state.path:
             robot.state.goal = tuple(robot.state.home_position)
-            robot.stuck_detector.reset(robot.state, robot.hardware)
+            robot.stuck_detector.reset(robot.state, robot.driver)
 
     def trigger_return_home(self, robots, world_to_grid_fn, plan_path_fn):
         """
@@ -195,19 +195,19 @@ class CoordinationController:
             None (commands robot movement)
         """
         if robot.state.mode == 'HOME':
-            robot.hardware.set_velocity(0.0, 0.0)
+            robot.driver.set_velocity(0.0, 0.0)
             return
 
         if robot.state.goal:
-            if robot.stuck_detector.is_stuck(robot.state, robot.hardware):
+            if robot.stuck_detector.is_stuck(robot.state, robot.driver):
                 print(f"Robot {robot.state.id} is stuck! Abandoning goal and replanning...")
                 robot.state.goal = None
                 robot.state.path = []
-                robot.stuck_detector.reset(robot.state, robot.hardware)
+                robot.stuck_detector.reset(robot.state, robot.driver)
                 robot.state.goal_attempts += 1
 
                 if robot.state.goal_attempts > robot.state.max_goal_attempts:
-                    robot.hardware.set_velocity(0.0, 2.0)
+                    robot.driver.set_velocity(0.0, 2.0)
                     robot.state.goal_attempts = 0
                 return
 
@@ -220,8 +220,8 @@ class CoordinationController:
                 if robot.state.goal:
                     return 'FOLLOW_PATH'
                 else:
-                    robot.hardware.set_velocity(0.0, 0.5)
+                    robot.driver.set_velocity(0.0, 0.5)
             else:
-                robot.hardware.set_velocity(0.0, 0.5)
+                robot.driver.set_velocity(0.0, 0.5)
 
         return None

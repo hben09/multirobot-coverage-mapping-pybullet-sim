@@ -8,7 +8,7 @@ significantly for a prolonged period.
 import numpy as np
 from typing import Tuple
 from robot.robot_state import RobotState
-from robot.robot_hardware import RobotHardware
+from robot.robot_driver import RobotDriver
 
 
 class StuckDetector:
@@ -30,7 +30,7 @@ class StuckDetector:
         self.threshold = threshold
         self.stuck_limit = stuck_limit
 
-    def is_stuck(self, state: RobotState, hardware: RobotHardware) -> bool:
+    def is_stuck(self, state: RobotState, driver: RobotDriver) -> bool:
         """
         Check if the robot is stuck.
 
@@ -38,13 +38,13 @@ class StuckDetector:
 
         Args:
             state: Robot state containing stuck counter and last position
-            hardware: Hardware interface to get current position
+            driver: Hardware driver to get current position
 
         Returns:
             True if robot is stuck (counter > limit), False otherwise
         """
-        # 1. Get current position from hardware
-        current_pos, _ = hardware.get_pose()
+        # 1. Get current position from driver
+        current_pos, _ = driver.get_pose()
 
         # 2. Check distance moved since last check
         distance_moved = np.linalg.norm(current_pos - state.last_position)
@@ -58,7 +58,7 @@ class StuckDetector:
 
         return state.stuck_counter > self.stuck_limit
 
-    def reset(self, state: RobotState, hardware: RobotHardware):
+    def reset(self, state: RobotState, driver: RobotDriver):
         """
         Reset the stuck detection state.
 
@@ -66,8 +66,8 @@ class StuckDetector:
 
         Args:
             state: Robot state to reset
-            hardware: Hardware interface to get current position
+            driver: Hardware driver to get current position
         """
         state.stuck_counter = 0
-        current_pos, _ = hardware.get_pose()
+        current_pos, _ = driver.get_pose()
         state.last_position = current_pos

@@ -1,29 +1,38 @@
 """
-RobotHardware - Interface to physical/simulated robot hardware.
+PyBulletDriver - PyBullet-specific implementation of RobotDriver.
 
-This module handles all PyBullet interactions, keeping hardware-specific
-code separate from state and behavior logic.
+This is a concrete implementation of the hardware abstraction layer
+that interfaces with PyBullet physics simulation.
 """
 
 import pybullet as p
 import numpy as np
 from typing import Tuple, List
+from .robot_driver import RobotDriver
 
 
-class RobotHardware:
+class PyBulletDriver(RobotDriver):
     """
-    Hardware interface for robot (PyBullet wrapper).
+    PyBullet implementation of the robot hardware interface.
 
-    Handles all low-level physics interactions:
+    This driver handles all PyBullet-specific interactions for:
     - Reading pose (position, orientation)
     - Setting velocities
     - LIDAR scanning
     - Physics queries
+
+    This is a pure hardware driver - it does NOT contain:
+    - Navigation logic
+    - Geometric computations relative to goals
+    - Path planning
+    - Control algorithms
+
+    Those belong in your autonomy stack, not the hardware layer.
     """
 
     def __init__(self, pybullet_id: int):
         """
-        Initialize hardware interface.
+        Initialize PyBullet hardware interface.
 
         Args:
             pybullet_id: The PyBullet body ID for this robot
@@ -34,7 +43,7 @@ class RobotHardware:
 
     def get_pose(self) -> Tuple[np.ndarray, float]:
         """
-        Get robot position and orientation from physics.
+        Get robot position and orientation from PyBullet.
 
         Returns:
             Tuple of (position_2d, yaw_angle)
@@ -48,7 +57,7 @@ class RobotHardware:
 
     def get_position_3d(self) -> Tuple[float, float, float]:
         """
-        Get full 3D position from physics.
+        Get full 3D position from PyBullet.
 
         Returns:
             (x, y, z) position tuple
@@ -70,7 +79,7 @@ class RobotHardware:
 
     def set_velocity(self, linear: float, angular: float):
         """
-        Send velocity command to robot.
+        Send velocity command to PyBullet robot.
 
         Args:
             linear: Linear velocity (m/s)
@@ -82,7 +91,7 @@ class RobotHardware:
         vx = linear * np.cos(yaw)
         vy = linear * np.sin(yaw)
 
-        # Apply velocity to physics
+        # Apply velocity to PyBullet physics
         p.resetBaseVelocity(
             self.id,
             linearVelocity=[vx, vy, 0],
@@ -93,7 +102,7 @@ class RobotHardware:
 
     def get_lidar_scan(self, num_rays: int = 360, max_range: float = 10.0) -> List[Tuple[float, float, bool]]:
         """
-        Perform LIDAR scan around the robot.
+        Perform LIDAR scan using PyBullet raycasting.
 
         Args:
             num_rays: Number of rays in 360 degrees
@@ -145,42 +154,3 @@ class RobotHardware:
                 scan_points.append((ray_to[i][0], ray_to[i][1], False))
 
         return scan_points
-
-    # === UTILITY METHODS ===
-
-    def distance_to(self, target_pos: Tuple[float, float]) -> float:
-        """
-        Calculate distance to a target position.
-
-        Args:
-            target_pos: (x, y) target position
-
-        Returns:
-            Euclidean distance in meters
-        """
-        pos, _ = self.get_pose()
-        dx = target_pos[0] - pos[0]
-        dy = target_pos[1] - pos[1]
-        return np.sqrt(dx**2 + dy**2)
-
-    def angle_to(self, target_pos: Tuple[float, float]) -> float:
-        """
-        Calculate angle difference to target position.
-
-        Args:
-            target_pos: (x, y) target position
-
-        Returns:
-            Angle difference in radians (normalized to [-pi, pi])
-        """
-        pos, yaw = self.get_pose()
-        dx = target_pos[0] - pos[0]
-        dy = target_pos[1] - pos[1]
-
-        desired_angle = np.arctan2(dy, dx)
-        angle_diff = desired_angle - yaw
-
-        # Normalize to [-pi, pi]
-        angle_diff = np.arctan2(np.sin(angle_diff), np.cos(angle_diff))
-
-        return angle_diff
