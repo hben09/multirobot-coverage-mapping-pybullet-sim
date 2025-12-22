@@ -78,7 +78,7 @@ class SimulationInitializer:
 
         return env, physics_client, map_bounds
 
-    def create_robots(self, env, robot_config, physics_config):
+    def create_robots(self, env, robot_config, physics_config, lidar_config=None):
         """
         Create and configure robots at spawn position.
 
@@ -86,6 +86,7 @@ class SimulationInitializer:
             env: PybulletRenderer instance
             robot_config (dict): 'robots' section of config
             physics_config (dict): 'physics' section of config
+            lidar_config (dict): Optional LIDAR config with 'num_rays' and 'max_range'
 
         Returns:
             list: List of RobotContainer instances
@@ -145,7 +146,7 @@ class SimulationInitializer:
                            spinningFriction=physics_config['spinning_friction'],
                            rollingFriction=physics_config['rolling_friction'])
 
-            robot = RobotContainer(robot_id, pos, color)
+            robot = RobotContainer(robot_id, pos, color, lidar_config=lidar_config)
             robots.append(robot)
 
         return robots

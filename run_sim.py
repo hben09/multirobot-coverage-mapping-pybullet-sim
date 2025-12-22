@@ -39,9 +39,10 @@ class SimulationManager:
 
         # Create robots
         self.robots = initializer.create_robots(
-            self.env, 
-            self.robot_cfg, 
-            self.config['physics']
+            self.env,
+            self.robot_cfg,
+            self.config['physics'],
+            lidar_config=self.config['sensors']['lidar']
         )
 
         # Initialize occupancy grid manager
@@ -127,21 +128,20 @@ class SimulationManager:
             self.plan_path_astar
         )
 
-    def exploration_logic(self, robot, step):
-        """Execute exploration logic for a robot."""
-        action = self.coordinator.execute_exploration_logic(
-            robot,
-            step,
-            self.plan_return_path_for_robot
-        )
+    def exploration_logic(self, robot, should_sense=True):
+        """
+        Execute exploration logic for a robot using agent-based control.
 
-        if action == 'FOLLOW_PATH':
-            l, a = robot.path_follower.compute_velocities(
-                robot.state,
-                robot.driver,
-                self.grid_to_world
-            )
-            robot.driver.set_velocity(l, a)
+        Args:
+            robot: RobotContainer with agent
+            should_sense: Whether the robot should perform sensing this step
+        """
+        # Use the robot's autonomous agent to execute sense-think-act cycle
+        robot.agent.update(
+            should_sense=should_sense,
+            plan_return_path_fn=self.plan_return_path_for_robot,
+            grid_to_world_fn=self.grid_to_world
+        )
 
     def plan_return_path_for_robot(self, robot):
         """Plan a path home for a single robot using A*."""
@@ -208,12 +208,9 @@ class SimulationManager:
         start_time = time.perf_counter()
         last_report_time = start_time
         last_report_step = 0
-        
+
         perf_stats = defaultdict(float)
-        
-        # LIDAR parameters
-        lidar_cfg = self.config['sensors']['lidar']
-        
+
         while True:
             if max_steps is not None and step >= max_steps:
                 break
@@ -242,44 +239,34 @@ class SimulationManager:
             
             perf_stats['global_planning'] += time.perf_counter() - t0
 
+            # Agent update cycle with optional sensing
             t0 = time.perf_counter()
+            should_sense = (step % intervals['scan'] == 0)
+
             for robot in robots:
-                self.exploration_logic(robot, step)
-                
+                # Agent handles sense-think-act autonomously
+                self.exploration_logic(robot, should_sense=should_sense)
+
+                # Check if robot reached home
                 if returning_home and robot.state.mode == 'RETURNING_HOME':
-                    pos, _ = p.getBasePositionAndOrientation(robot.state.id)
-                    dx = pos[0] - robot.state.home_position[0]
-                    dy = pos[1] - robot.state.home_position[1]
-                    if dx*dx + dy*dy < 1.0:
-                        robot.state.mode = 'HOME'
-                        robot.state.goal = None
-                        robot.state.path = []
+                    if robot.agent.check_if_home():
                         robots_home.add(robot.state.id)
                         print(f"Robot {robot.state.id} arrived home!")
+
             perf_stats['local_planning'] += time.perf_counter() - t0
 
+            # Update occupancy grid from robot sensor data
             t0 = time.perf_counter()
-            if step % intervals['scan'] == 0:
+            if should_sense:
                 for robot in robots:
-                    # Perform LIDAR scan and update state
-                    scan_points = robot.driver.get_lidar_scan(
-                        num_rays=lidar_cfg['num_rays'],
-                        max_range=lidar_cfg['max_range']
-                    )
-                    robot.state.lidar_data = scan_points
-                    pos_array, _ = robot.driver.get_pose()
-                    robot.state.trajectory.append((pos_array[0], pos_array[1]))
-                    robot.state.trim_trajectory_if_needed()
-                    robot.direction_tracker.update(robot.state)
-
                     self.update_occupancy_grid(robot)
 
                 self.grid_manager.invalidate_coverage_cache()
                 self.grid_manager.invalidate_frontier_cache()
-                
+
                 coverage = self.calculate_coverage()
                 self.coverage_history.append((step, coverage))
-                
+
             perf_stats['sensing'] += time.perf_counter() - t0
 
             t0 = time.perf_counter()
