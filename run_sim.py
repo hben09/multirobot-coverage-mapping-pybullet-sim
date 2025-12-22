@@ -75,11 +75,11 @@ class SimulationManager:
 
     def update_occupancy_grid(self, robot):
         """Update occupancy grid from robot LIDAR data - NUMBA OPTIMIZED."""
-        if not robot.lidar_data:
+        if not robot.state.lidar_data:
             return
 
-        pos, _ = p.getBasePositionAndOrientation(robot.id)
-        self.grid_manager.update_occupancy_grid((pos[0], pos[1]), robot.lidar_data)
+        pos, _ = p.getBasePositionAndOrientation(robot.state.id)
+        self.grid_manager.update_occupancy_grid((pos[0], pos[1]), robot.state.lidar_data)
 
     def detect_frontiers(self, use_cache=False):
         """Detect and cluster frontier cells - OPTIMIZED with candidate tracking."""
@@ -122,8 +122,12 @@ class SimulationManager:
         )
 
         if action == 'FOLLOW_PATH':
-            l, a = robot.follow_path(self)
-            robot.move(l, a)
+            l, a = robot.path_follower.compute_velocities(
+                robot.state,
+                robot.hardware,
+                self.grid_to_world
+            )
+            robot.hardware.set_velocity(l, a)
 
     def plan_return_path_for_robot(self, robot):
         """Plan a path home for a single robot using A*."""
@@ -200,7 +204,7 @@ class SimulationManager:
             t0 = time.perf_counter()
 
             active_robots = robots
-            any_idle = any(r.goal is None for r in active_robots)
+            any_idle = any(r.state.goal is None for r in active_robots)
             
             should_plan = (step % 50 == 0) or (any_idle and step % 5 == 0)
             
@@ -221,26 +225,33 @@ class SimulationManager:
             for robot in robots:
                 self.exploration_logic(robot, step)
                 
-                if returning_home and robot.mode == 'RETURNING_HOME':
-                    pos, _ = p.getBasePositionAndOrientation(robot.id)
-                    dx = pos[0] - robot.home_position[0]
-                    dy = pos[1] - robot.home_position[1]
-                    if dx*dx + dy*dy < 1.0: 
-                        robot.mode = 'HOME'
-                        robot.goal = None
-                        robot.path = []
-                        robots_home.add(robot.id)
-                        print(f"Robot {robot.id} arrived home!")
+                if returning_home and robot.state.mode == 'RETURNING_HOME':
+                    pos, _ = p.getBasePositionAndOrientation(robot.state.id)
+                    dx = pos[0] - robot.state.home_position[0]
+                    dy = pos[1] - robot.state.home_position[1]
+                    if dx*dx + dy*dy < 1.0:
+                        robot.state.mode = 'HOME'
+                        robot.state.goal = None
+                        robot.state.path = []
+                        robots_home.add(robot.state.id)
+                        print(f"Robot {robot.state.id} arrived home!")
             perf_stats['local_planning'] += time.perf_counter() - t0
 
             t0 = time.perf_counter()
             if step % scan_interval == 0:
                 for robot in robots:
-                    robot.get_lidar_scan(num_rays=cfg.LIDAR_NUM_RAYS, max_range=cfg.LIDAR_MAX_RANGE)
+                    # Perform LIDAR scan and update state
+                    scan_points = robot.hardware.get_lidar_scan(num_rays=cfg.LIDAR_NUM_RAYS, max_range=cfg.LIDAR_MAX_RANGE)
+                    robot.state.lidar_data = scan_points
+                    pos_array, _ = robot.hardware.get_pose()
+                    robot.state.trajectory.append((pos_array[0], pos_array[1]))
+                    robot.state.trim_trajectory_if_needed()
+                    robot.direction_tracker.update(robot.state)
+
                     self.update_occupancy_grid(robot)
-                    
-                    if robot.mode != 'HOME':
-                        robot.update_global_graph()
+
+                    if robot.state.mode != 'HOME':
+                        robot.graph_manager.update_graph(robot.state, robot.hardware)
 
                 self.grid_manager.invalidate_coverage_cache()
                 self.grid_manager.invalidate_frontier_cache()

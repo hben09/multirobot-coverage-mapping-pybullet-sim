@@ -43,13 +43,13 @@ class CoordinationController:
         Utility Function with Direction Bias and Volumetric Gain.
 
         Args:
-            robot: Robot object
+            robot: RobotContainer object
             frontier: Frontier dict with 'pos' and 'size'
 
         Returns:
             tuple: (utility_value, debug_info_dict)
         """
-        pos, orn = p.getBasePositionAndOrientation(robot.id)
+        pos, orn = p.getBasePositionAndOrientation(robot.state.id)
         robot_pos = np.array([pos[0], pos[1]])
         frontier_pos = np.array(frontier['pos'])
 
@@ -62,7 +62,7 @@ class CoordinationController:
 
         if to_frontier_norm > 0.1:
             to_frontier_unit = to_frontier / to_frontier_norm
-            alignment = np.dot(robot.exploration_direction, to_frontier_unit)
+            alignment = np.dot(robot.state.exploration_direction, to_frontier_unit)
             alignment_normalized = (alignment + 1.0) / 2.0
             direction_bonus = alignment_normalized * self.direction_bias_weight
         else:
@@ -91,8 +91,8 @@ class CoordinationController:
 
         active_robots = robots
         for robot in active_robots:
-            robot.mode = 'GLOBAL_RELOCATE'
-            robot.cleanup_blacklist(step)
+            robot.state.mode = 'GLOBAL_RELOCATE'
+            robot.state.cleanup_blacklist(step)
 
         current_round_goals = []
         unassigned_robots = active_robots.copy()
@@ -103,11 +103,11 @@ class CoordinationController:
 
             for robot in unassigned_robots:
                 current_goal_pos = None
-                if robot.goal:
-                    current_goal_pos = np.array(robot.goal)
+                if robot.state.goal:
+                    current_goal_pos = np.array(robot.state.goal)
 
                 for f in frontiers:
-                    if f['grid_pos'] in robot.blacklisted_goals:
+                    if f['grid_pos'] in robot.state.blacklisted_goals:
                         continue
 
                     target_pos = np.array(f['pos'])
@@ -138,8 +138,8 @@ class CoordinationController:
                 winner_robot, winning_frontier = best_pair
                 target_pos = winning_frontier['pos']
 
-                old_goal = winner_robot.goal
-                winner_robot.goal = target_pos
+                old_goal = winner_robot.state.goal
+                winner_robot.state.goal = target_pos
 
                 should_replan = True
                 if old_goal is not None:
@@ -148,22 +148,22 @@ class CoordinationController:
                         should_replan = False
 
                 if should_replan:
-                    winner_robot.reset_stuck_state()
-                    winner_robot.goal_attempts = 0
+                    winner_robot.stuck_detector.reset(winner_robot.state, winner_robot.hardware)
+                    winner_robot.state.goal_attempts = 0
 
-                    pos, _ = p.getBasePositionAndOrientation(winner_robot.id)
+                    pos, _ = p.getBasePositionAndOrientation(winner_robot.state.id)
                     start_grid = world_to_grid_fn(pos[0], pos[1])
                     path = plan_path_fn(start_grid, winning_frontier['grid_pos'])
 
                     if path:
-                        winner_robot.path = path
-                        print(f"Robot {winner_robot.id}: Assigned goal (Utility: {best_global_utility:.1f})")
+                        winner_robot.state.path = path
+                        print(f"Robot {winner_robot.state.id}: Assigned goal (Utility: {best_global_utility:.1f})")
                     else:
-                        winner_robot.goal = None
-                        winner_robot.blacklisted_goals[winning_frontier['grid_pos']] = step + 500
-                        print(f"Robot {winner_robot.id}: Path failed to {winning_frontier['grid_pos']}, blacklisted.")
+                        winner_robot.state.goal = None
+                        winner_robot.state.blacklisted_goals[winning_frontier['grid_pos']] = step + 500
+                        print(f"Robot {winner_robot.state.id}: Path failed to {winning_frontier['grid_pos']}, blacklisted.")
 
-                if winner_robot.goal is not None:
+                if winner_robot.state.goal is not None:
                     current_round_goals.append(target_pos)
                     unassigned_robots.remove(winner_robot)
 
@@ -172,37 +172,37 @@ class CoordinationController:
 
         # Clear goals for unassigned robots
         for loser_robot in unassigned_robots:
-            if loser_robot.goal is not None:
-                loser_robot.goal = None
-                loser_robot.path = []
+            if loser_robot.state.goal is not None:
+                loser_robot.state.goal = None
+                loser_robot.state.path = []
 
     def plan_return_path(self, robot, world_to_grid_fn, plan_path_fn):
         """
         Plan a path home for a single robot.
 
         Args:
-            robot: Robot object
+            robot: RobotContainer object
             world_to_grid_fn: Function to convert world coords to grid coords
             plan_path_fn: Function to plan path (start_grid, goal_grid) -> path
 
         Returns:
             None (modifies robot goal and path in place)
         """
-        pos, _ = p.getBasePositionAndOrientation(robot.id)
+        pos, _ = p.getBasePositionAndOrientation(robot.state.id)
         start_grid = world_to_grid_fn(pos[0], pos[1])
-        home_grid = world_to_grid_fn(robot.home_position[0], robot.home_position[1])
+        home_grid = world_to_grid_fn(robot.state.home_position[0], robot.state.home_position[1])
 
-        robot.path = plan_path_fn(start_grid, home_grid)
-        if robot.path:
-            robot.goal = tuple(robot.home_position)
-            robot.reset_stuck_state()
+        robot.state.path = plan_path_fn(start_grid, home_grid)
+        if robot.state.path:
+            robot.state.goal = tuple(robot.state.home_position)
+            robot.stuck_detector.reset(robot.state, robot.hardware)
 
     def trigger_return_home(self, robots, world_to_grid_fn, plan_path_fn):
         """
         Trigger all robots to return to their home positions.
 
         Args:
-            robots: List of robot objects
+            robots: List of RobotContainer objects
             world_to_grid_fn: Function to convert world coords to grid coords
             plan_path_fn: Function to plan path (start_grid, goal_grid) -> path
 
@@ -210,50 +210,50 @@ class CoordinationController:
             None (modifies robot modes, goals, and paths in place)
         """
         for robot in robots:
-            robot.mode = 'RETURNING_HOME'
+            robot.state.mode = 'RETURNING_HOME'
             self.plan_return_path(robot, world_to_grid_fn, plan_path_fn)
-            print(f"Robot {robot.id}: Returning home with {len(robot.path)} waypoints")
+            print(f"Robot {robot.state.id}: Returning home with {len(robot.state.path)} waypoints")
 
     def execute_exploration_logic(self, robot, step, plan_return_path_fn):
         """
         Execute exploration logic for a single robot.
 
         Args:
-            robot: Robot object
+            robot: RobotContainer object
             step: Current simulation step
             plan_return_path_fn: Function to plan return path for robot
 
         Returns:
             None (commands robot movement)
         """
-        if robot.mode == 'HOME':
-            robot.move(0.0, 0.0)
+        if robot.state.mode == 'HOME':
+            robot.hardware.set_velocity(0.0, 0.0)
             return
 
-        if robot.goal:
-            if robot.check_if_stuck(threshold=0.2, stuck_limit=200):
-                print(f"Robot {robot.id} is stuck! Abandoning goal and replanning...")
-                robot.goal = None
-                robot.path = []
-                robot.reset_stuck_state()
-                robot.goal_attempts += 1
+        if robot.state.goal:
+            if robot.stuck_detector.is_stuck(robot.state, robot.hardware):
+                print(f"Robot {robot.state.id} is stuck! Abandoning goal and replanning...")
+                robot.state.goal = None
+                robot.state.path = []
+                robot.stuck_detector.reset(robot.state, robot.hardware)
+                robot.state.goal_attempts += 1
 
-                if robot.goal_attempts > robot.max_goal_attempts:
-                    robot.move(0.0, 2.0)
-                    robot.goal_attempts = 0
+                if robot.state.goal_attempts > robot.state.max_goal_attempts:
+                    robot.hardware.set_velocity(0.0, 2.0)
+                    robot.state.goal_attempts = 0
                 return
 
             # Follow path requires mapper context
             # This stays in the main class for now
             return 'FOLLOW_PATH'
         else:
-            if robot.mode == 'RETURNING_HOME':
+            if robot.state.mode == 'RETURNING_HOME':
                 plan_return_path_fn(robot)
-                if robot.goal:
+                if robot.state.goal:
                     return 'FOLLOW_PATH'
                 else:
-                    robot.move(0.0, 0.5)
+                    robot.hardware.set_velocity(0.0, 0.5)
             else:
-                robot.move(0.0, 0.5)
+                robot.hardware.set_velocity(0.0, 0.5)
 
         return None

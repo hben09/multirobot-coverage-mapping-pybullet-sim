@@ -33,8 +33,8 @@ class SimulationLogger:
             'map_bounds': mapper.map_bounds.copy(),
             'grid_resolution': mapper.grid_manager.grid_resolution,
             'num_robots': len(mapper.robots),
-            'robot_colors': [robot.color for robot in mapper.robots],
-            'robot_home_positions': [robot.home_position.tolist() for robot in mapper.robots],
+            'robot_colors': [robot.state.color for robot in mapper.robots],
+            'robot_home_positions': [robot.state.home_position.tolist() for robot in mapper.robots],
             'total_free_cells': mapper.grid_manager.total_free_cells,
             'maze_grid': mapper.env.maze_grid.copy(),
         }
@@ -86,19 +86,19 @@ class SimulationLogger:
         }
 
         for robot in mapper.robots:
-            pos, orn = p.getBasePositionAndOrientation(robot.id)
+            pos, orn = p.getBasePositionAndOrientation(robot.state.id)
             euler = p.getEulerFromQuaternion(orn)
 
             robot_state = {
                 'position': [pos[0], pos[1], pos[2]],
                 'orientation': euler[2],  # yaw
-                'goal': list(robot.goal) if robot.goal else None,
-                'path': [list(wp) for wp in robot.path] if robot.path else [],
-                'mode': robot.mode,
-                'exploration_direction': robot.exploration_direction.tolist(),
-                'trajectory': [list(t) for t in robot.trajectory[-100:]],  # Last 100 points
-                'global_graph_nodes': [list(n) for n in robot.global_graph_nodes],
-                'global_graph_edges': list(robot.global_graph_edges),
+                'goal': list(robot.state.goal) if robot.state.goal else None,
+                'path': [list(wp) for wp in robot.state.path] if robot.state.path else [],
+                'mode': robot.state.mode,
+                'exploration_direction': robot.state.exploration_direction.tolist(),
+                'trajectory': [list(t) for t in robot.state.trajectory[-100:]],  # Last 100 points
+                'global_graph_nodes': [list(n) for n in robot.state.global_graph_nodes],
+                'global_graph_edges': list(robot.state.global_graph_edges),
             }
             frame['robots'].append(robot_state)
 

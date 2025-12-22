@@ -198,22 +198,22 @@ class RealtimeVisualizer:
             color = self.ROBOT_COLOR_NAMES[i % len(self.ROBOT_COLOR_NAMES)]
 
             # Draw graph edges
-            for edge in robot.global_graph_edges:
+            for edge in robot.state.global_graph_edges:
                 n1, n2 = edge
-                if n1 < len(robot.global_graph_nodes) and n2 < len(robot.global_graph_nodes):
-                    p1 = robot.global_graph_nodes[n1]
-                    p2 = robot.global_graph_nodes[n2]
+                if n1 < len(robot.state.global_graph_nodes) and n2 < len(robot.state.global_graph_nodes):
+                    p1 = robot.state.global_graph_nodes[n1]
+                    p2 = robot.state.global_graph_nodes[n2]
                     ax.plot([p1[0], p2[0]], [p1[1], p2[1]],
                            c=color, linewidth=1, alpha=0.3, linestyle='-')
 
             # Draw graph nodes
-            if robot.global_graph_nodes:
-                nodes_arr = np.array(robot.global_graph_nodes)
+            if robot.state.global_graph_nodes:
+                nodes_arr = np.array(robot.state.global_graph_nodes)
                 ax.scatter(nodes_arr[:, 0], nodes_arr[:, 1],
                           c=color, s=15, alpha=0.5, marker='o', zorder=3)
 
                 # Draw home position
-                ax.scatter(robot.home_position[0], robot.home_position[1],
+                ax.scatter(robot.state.home_position[0], robot.state.home_position[1],
                           c=color, s=100, marker='s', edgecolors='white',
                           linewidths=2, zorder=4, label=f'R{i} Home' if i == 0 else '')
 
@@ -225,32 +225,32 @@ class RealtimeVisualizer:
             color = self.ROBOT_COLOR_NAMES[i % len(self.ROBOT_COLOR_NAMES)]
 
             # Draw trajectory
-            if robot.trajectory:
-                traj = np.array(robot.trajectory)
+            if robot.state.trajectory:
+                traj = np.array(robot.state.trajectory)
                 ax.plot(traj[:, 0], traj[:, 1], c=color, linewidth=1.5, alpha=0.6)
 
             # Draw planned path
-            if robot.path:
-                path_world = [mapper.grid_to_world(p[0], p[1]) for p in robot.path]
+            if robot.state.path:
+                path_world = [mapper.grid_to_world(p[0], p[1]) for p in robot.state.path]
                 path_arr = np.array(path_world)
                 ax.plot(path_arr[:, 0], path_arr[:, 1], c=color, linestyle=':', linewidth=2)
 
             # Draw current position
-            pos, _ = p.getBasePositionAndOrientation(robot.id)
+            pos, _ = p.getBasePositionAndOrientation(robot.state.id)
             ax.scatter(pos[0], pos[1], c=color, s=100, marker='^',
                       edgecolors='black', linewidths=1.5, zorder=5)
 
             # Draw exploration direction arrow
             arrow_len = 1.5
             ax.arrow(pos[0], pos[1],
-                    robot.exploration_direction[0] * arrow_len,
-                    robot.exploration_direction[1] * arrow_len,
+                    robot.state.exploration_direction[0] * arrow_len,
+                    robot.state.exploration_direction[1] * arrow_len,
                     head_width=0.3, head_length=0.2, fc=color, ec='black',
                     alpha=0.7, zorder=6)
 
             # Draw goal marker
-            if robot.goal is not None:
-                ax.scatter(robot.goal[0], robot.goal[1], c=color, s=150,
+            if robot.state.goal is not None:
+                ax.scatter(robot.state.goal[0], robot.state.goal[1], c=color, s=150,
                           marker='X', edgecolors='white', linewidths=2, zorder=6)
 
     def _render_frontier_panel(self):
@@ -293,7 +293,7 @@ class RealtimeVisualizer:
         # Draw robot positions
         for i, robot in enumerate(mapper.robots):
             color = self.ROBOT_COLOR_NAMES[i % len(self.ROBOT_COLOR_NAMES)]
-            pos, _ = p.getBasePositionAndOrientation(robot.id)
+            pos, _ = p.getBasePositionAndOrientation(robot.state.id)
             ax.scatter(pos[0], pos[1], c=color, s=150, marker='^',
                       edgecolors='black', linewidths=2, zorder=6)
 

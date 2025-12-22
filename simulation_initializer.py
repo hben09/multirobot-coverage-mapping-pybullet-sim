@@ -6,7 +6,7 @@ Handles environment setup, map generation, and robot creation for the coverage m
 
 import pybullet as p
 from environment import MapGenerator, PybulletRenderer
-from robot import Robot
+from robot import RobotContainer
 import sim_config as cfg
 
 
@@ -139,7 +139,7 @@ class SimulationInitializer:
                            spinningFriction=cfg.SPINNING_FRICTION,
                            rollingFriction=cfg.ROLLING_FRICTION)
 
-            robot = Robot(robot_id, pos, color)
+            robot = RobotContainer(robot_id, pos, color)
             robots.append(robot)
 
         return robots
