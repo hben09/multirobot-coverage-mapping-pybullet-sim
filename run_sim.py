@@ -250,9 +250,6 @@ class SimulationManager:
 
                     self.update_occupancy_grid(robot)
 
-                    if robot.state.mode != 'HOME':
-                        robot.graph_manager.update_graph(robot.state, robot.hardware)
-
                 self.grid_manager.invalidate_coverage_cache()
                 self.grid_manager.invalidate_frontier_cache()
                 

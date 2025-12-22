@@ -14,7 +14,6 @@ class RobotContainer:
     - stuck_detector: StuckDetector (behavior)
     - path_follower: PathFollower (behavior)
     - direction_tracker: ExplorationDirectionTracker (behavior)
-    - graph_manager: GlobalGraphManager (behavior)
 
     Unlike the old Robot class, this doesn't provide convenience methods.
     Users should access components directly (e.g., robot.state.position).
@@ -33,7 +32,6 @@ class RobotContainer:
         from behaviors.stuck_detector import StuckDetector
         from behaviors.path_follower import PathFollower
         from behaviors.exploration_direction_tracker import ExplorationDirectionTracker
-        from behaviors.global_graph_manager import GlobalGraphManager
 
         # Core components
         self.state = RobotState(id=robot_id, position=position, color=color)
@@ -53,7 +51,6 @@ class RobotContainer:
             min_distance=0.5,
             smoothing_alpha=0.3
         )
-        self.graph_manager = GlobalGraphManager(waypoint_spacing=3.0)
 
 
 __all__ = ['RobotState', 'RobotHardware', 'RobotContainer']

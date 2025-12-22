@@ -97,8 +97,6 @@ class SimulationLogger:
                 'mode': robot.state.mode,
                 'exploration_direction': robot.state.exploration_direction.tolist(),
                 'trajectory': [list(t) for t in robot.state.trajectory[-100:]],  # Last 100 points
-                'global_graph_nodes': [list(n) for n in robot.state.global_graph_nodes],
-                'global_graph_edges': list(robot.state.global_graph_edges),
             }
             frame['robots'].append(robot_state)
 

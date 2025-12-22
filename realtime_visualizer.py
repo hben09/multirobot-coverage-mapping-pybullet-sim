@@ -142,8 +142,8 @@ class RealtimeVisualizer:
         if mapper.show_partitions:
             self._draw_partitions(ax)
 
-        # Draw robot graph nodes and edges
-        self._draw_robot_graphs(ax)
+        # Draw robot home positions
+        self._draw_robot_home_positions(ax)
 
         # Draw robot trajectories and current states
         self._draw_robot_states(ax)
@@ -158,12 +158,11 @@ class RealtimeVisualizer:
         # Title with status
         status = "RETURNING HOME" if mapper.returning_home else "EXPLORING"
         decomp_status = " | [P]artitions: ON" if mapper.show_partitions else ""
-        ax.set_title(f'Occupancy Grid + Global Graph | Status: {status}{decomp_status}')
+        ax.set_title(f'Occupancy Grid | Status: {status}{decomp_status}')
 
         # Coverage info overlay
         coverage = mapper.calculate_coverage()
-        total_nodes = sum(len(r.global_graph_nodes) for r in mapper.robots)
-        ax.text(0.02, 0.98, f'Coverage: {coverage:.1f}%\nGraph nodes: {total_nodes}',
+        ax.text(0.02, 0.98, f'Coverage: {coverage:.1f}%',
                 transform=ax.transAxes, verticalalignment='top',
                 bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.9))
 
@@ -190,32 +189,17 @@ class RealtimeVisualizer:
             )
             ax.add_patch(rect_patch)
 
-    def _draw_robot_graphs(self, ax):
-        """Draw robot navigation graphs."""
+    def _draw_robot_home_positions(self, ax):
+        """Draw robot home positions."""
         mapper = self.mapper
 
         for i, robot in enumerate(mapper.robots):
             color = self.ROBOT_COLOR_NAMES[i % len(self.ROBOT_COLOR_NAMES)]
 
-            # Draw graph edges
-            for edge in robot.state.global_graph_edges:
-                n1, n2 = edge
-                if n1 < len(robot.state.global_graph_nodes) and n2 < len(robot.state.global_graph_nodes):
-                    p1 = robot.state.global_graph_nodes[n1]
-                    p2 = robot.state.global_graph_nodes[n2]
-                    ax.plot([p1[0], p2[0]], [p1[1], p2[1]],
-                           c=color, linewidth=1, alpha=0.3, linestyle='-')
-
-            # Draw graph nodes
-            if robot.state.global_graph_nodes:
-                nodes_arr = np.array(robot.state.global_graph_nodes)
-                ax.scatter(nodes_arr[:, 0], nodes_arr[:, 1],
-                          c=color, s=15, alpha=0.5, marker='o', zorder=3)
-
-                # Draw home position
-                ax.scatter(robot.state.home_position[0], robot.state.home_position[1],
-                          c=color, s=100, marker='s', edgecolors='white',
-                          linewidths=2, zorder=4, label=f'R{i} Home' if i == 0 else '')
+            # Draw home position
+            ax.scatter(robot.state.home_position[0], robot.state.home_position[1],
+                      c=color, s=100, marker='s', edgecolors='white',
+                      linewidths=2, zorder=4, label=f'R{i} Home' if i == 0 else '')
 
     def _draw_robot_states(self, ax):
         """Draw robot trajectories, paths, positions, and goals."""

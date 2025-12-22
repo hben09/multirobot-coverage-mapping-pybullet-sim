@@ -183,15 +183,6 @@ class SimulationPlayback:
                 traj = np.array(robot_state['trajectory'])
                 ax_grid.plot(traj[:, 0], traj[:, 1], c=color, linewidth=1.5, alpha=0.6)
             
-            # Draw global graph
-            for edge in robot_state['global_graph_edges']:
-                n1, n2 = edge
-                nodes = robot_state['global_graph_nodes']
-                if n1 < len(nodes) and n2 < len(nodes):
-                    p1, p2 = nodes[n1], nodes[n2]
-                    ax_grid.plot([p1[0], p2[0]], [p1[1], p2[1]], 
-                               c=color, linewidth=1, alpha=0.3)
-            
             # Draw planned path
             if robot_state['path']:
                 path_world = [self.grid_to_world(p[0], p[1]) for p in robot_state['path']]

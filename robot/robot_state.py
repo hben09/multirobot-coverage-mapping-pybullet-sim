@@ -8,7 +8,6 @@ Behaviors are implemented in separate modules.
 from dataclasses import dataclass, field
 from typing import List, Tuple, Optional, Dict
 import numpy as np
-from collections import defaultdict
 
 
 @dataclass
@@ -48,16 +47,8 @@ class RobotState:
     stuck_counter: int = 0
     last_position: np.ndarray = field(default_factory=lambda: np.array([0.0, 0.0]))
 
-    # === 7. Global Navigation Graph ===
+    # === 7. Home Position ===
     home_position: np.ndarray = field(default_factory=lambda: np.array([0.0, 0.0]))
-    global_graph_nodes: List[Tuple[float, float]] = field(default_factory=list)
-    global_graph_edges: set = field(default_factory=set)
-    last_graph_node_idx: int = 0
-    waypoint_spacing: float = 3.0
-
-    # === 8. Spatial Hashing for Optimization ===
-    _node_grid: defaultdict = field(default_factory=lambda: defaultdict(list))
-    _node_grid_cell_size: float = 3.0
 
     # === Constants ===
     MAX_TRAJECTORY_LENGTH: int = field(default=200, init=False)
@@ -70,24 +61,6 @@ class RobotState:
 
         # Initialize home_position from position
         self.home_position = np.array([self.position[0], self.position[1]])
-
-        # Initialize global graph with starting position
-        start_pos = (self.position[0], self.position[1])
-        self.global_graph_nodes = [start_pos]
-
-        # Set grid cell size from waypoint spacing
-        self._node_grid_cell_size = self.waypoint_spacing
-
-        # Add initial node to spatial hash
-        cell = self._get_spatial_hash_cell(start_pos)
-        self._node_grid[cell].append(0)
-
-    def _get_spatial_hash_cell(self, pos: Tuple[float, float]) -> Tuple[int, int]:
-        """Get the spatial hash cell for a position."""
-        return (
-            int(pos[0] / self._node_grid_cell_size),
-            int(pos[1] / self._node_grid_cell_size)
-        )
 
     def cleanup_blacklist(self, current_step: int):
         """Remove expired entries from the blacklist."""

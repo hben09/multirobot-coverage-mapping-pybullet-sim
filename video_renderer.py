@@ -213,15 +213,6 @@ def render_occupancy_grid(frame, metadata, transform, panel_size):
             traj_pixels = np.array(traj_pixels, dtype=np.int32)
             cv2.polylines(img, [traj_pixels], False, color, 1, cv2.LINE_AA)
 
-        # Global graph
-        nodes = robot_state['global_graph_nodes']
-        for edge in robot_state['global_graph_edges']:
-            n1, n2 = edge
-            if n1 < len(nodes) and n2 < len(nodes):
-                p1 = transform.world_to_pixel(nodes[n1][0], nodes[n1][1])
-                p2 = transform.world_to_pixel(nodes[n2][0], nodes[n2][1])
-                cv2.line(img, p1, p2, color, 1, cv2.LINE_AA)
-
         # Planned path
         if robot_state['path'] and len(robot_state['path']) > 1:
             for j in range(len(robot_state['path']) - 1):
