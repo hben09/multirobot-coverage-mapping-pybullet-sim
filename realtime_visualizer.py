@@ -121,12 +121,12 @@ class RealtimeVisualizer:
         mapper = self.mapper
 
         # Create grid image
-        grid_x = int((mapper.map_bounds['x_max'] - mapper.map_bounds['x_min']) / mapper.grid_resolution)
-        grid_y = int((mapper.map_bounds['y_max'] - mapper.map_bounds['y_min']) / mapper.grid_resolution)
+        grid_x = int((mapper.map_bounds['x_max'] - mapper.map_bounds['x_min']) / mapper.grid_manager.grid_resolution)
+        grid_y = int((mapper.map_bounds['y_max'] - mapper.map_bounds['y_min']) / mapper.grid_manager.grid_resolution)
         grid_image = np.ones((grid_y, grid_x, 3)) * 0.7
 
         # Fill in occupancy data
-        for cell, value in mapper.occupancy_grid.items():
+        for cell, value in mapper.grid_manager.occupancy_grid.items():
             gx, gy = cell
             if 0 <= gx < grid_x and 0 <= gy < grid_y:
                 if value == 1:
@@ -170,17 +170,17 @@ class RealtimeVisualizer:
     def _draw_partitions(self, ax):
         """Draw rectangular decomposition overlay."""
         mapper = self.mapper
-        rects = decompose_grid_to_rectangles(mapper.occupancy_grid, max_rects=5)
+        rects = decompose_grid_to_rectangles(mapper.grid_manager.occupancy_grid, max_rects=5)
 
         for gx, gy, w, h in rects:
             # Convert to world coordinates
             wx, wy = mapper.grid_to_world(gx, gy)
-            rect_w = w * mapper.grid_resolution
-            rect_h = h * mapper.grid_resolution
+            rect_w = w * mapper.grid_manager.grid_resolution
+            rect_h = h * mapper.grid_manager.grid_resolution
 
             # grid_to_world returns center, convert to bottom-left
-            rect_x = wx - mapper.grid_resolution / 2
-            rect_y = wy - mapper.grid_resolution / 2
+            rect_x = wx - mapper.grid_manager.grid_resolution / 2
+            rect_y = wy - mapper.grid_manager.grid_resolution / 2
 
             # Random pastel color
             color = np.random.rand(3) * 0.5 + 0.5
@@ -260,8 +260,8 @@ class RealtimeVisualizer:
 
         # Draw explored cells
         explored_points = []
-        for cell in mapper.explored_cells:
-            if mapper.occupancy_grid.get(cell) == 1:
+        for cell in mapper.grid_manager.explored_cells:
+            if mapper.grid_manager.occupancy_grid.get(cell) == 1:
                 x, y = mapper.grid_to_world(cell[0], cell[1])
                 explored_points.append([x, y])
 
@@ -272,7 +272,7 @@ class RealtimeVisualizer:
 
         # Draw obstacles
         obstacle_points = []
-        for cell in mapper.obstacle_cells:
+        for cell in mapper.grid_manager.obstacle_cells:
             x, y = mapper.grid_to_world(cell[0], cell[1])
             obstacle_points.append([x, y])
 

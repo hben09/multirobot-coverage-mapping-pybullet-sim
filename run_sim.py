@@ -7,7 +7,7 @@ from environment import MapGenerator, PybulletRenderer
 from sim_logger import SimulationLogger
 from robot import Robot
 from pathfinding import NumbaAStarHelper
-from numba_occupancy import NumbaOccupancyGrid
+from occupancy_grid_manager import OccupancyGridManager
 from sim_config import get_simulation_config, print_config
 import sim_config as cfg
 from realtime_visualizer import RealtimeVisualizer
@@ -41,17 +41,13 @@ class CoverageMapper:
         self.robots = []
         self.create_robots()
 
-        self.grid_resolution = grid_resolution
-        self.occupancy_grid = {}  # 1=Free, 2=Obstacle
-        self.explored_cells = set()
-        self.obstacle_cells = set()
-
+        # Calculate map bounds
         block_physical_size = self.env.cell_size / 2.0
         half_block = block_physical_size / 2.0
-        
+
         maze_world_width = self.env.maze_grid.shape[1] * block_physical_size
         maze_world_height = self.env.maze_grid.shape[0] * block_physical_size
-        
+
         self.map_bounds = {
             'x_min': -half_block,
             'x_max': maze_world_width - half_block,
@@ -59,10 +55,9 @@ class CoverageMapper:
             'y_max': maze_world_height - half_block
         }
 
-        self.scale_factor = block_physical_size / self.grid_resolution
-        ground_truth_zeros = np.sum(self.env.maze_grid == 0)
-        self.total_free_cells = ground_truth_zeros * (self.scale_factor ** 2)
-        
+        # Initialize occupancy grid manager
+        self.grid_manager = OccupancyGridManager(self.map_bounds, grid_resolution, self.env)
+
         self.coverage_history = []
         self.claimed_goals = {}
 
@@ -85,33 +80,9 @@ class CoverageMapper:
 
         # Safety margin (from config)
         self.safety_margin = cfg.SAFETY_MARGIN
-        
+
         # Numba A* helper
         self._numba_astar = NumbaAStarHelper()
-        
-        # Performance optimization caches
-        self._cached_coverage = 0.0
-        self._coverage_cache_valid = False
-        self._coverage_explored_count = 0 
-        self._cached_frontiers = None
-        
-        # INCREMENTAL COVERAGE TRACKING
-        self._incremental_valid_count = 0
-        self._processed_explored_cells = set()
-        
-        # Pre-compute maze lookup
-        self._maze_block_size = self.env.cell_size / 2.0
-        self._maze_half_block = self._maze_block_size / 2.0
-        self._maze_inv_block_size = 1.0 / self._maze_block_size
-        
-        # Pre-computed grid bounds
-        self._grid_bounds = None 
-        
-        # INCREMENTAL FRONTIER DETECTION
-        self._frontier_candidates = set()
-        
-        # Numba-accelerated occupancy grid
-        self._numba_occupancy = NumbaOccupancyGrid(self.map_bounds, self.grid_resolution)
         
         # Logging
         self.logger = None
@@ -174,14 +145,10 @@ class CoverageMapper:
             self.robots.append(robot)
 
     def world_to_grid(self, x, y):
-        grid_x = int((x - self.map_bounds['x_min']) / self.grid_resolution)
-        grid_y = int((y - self.map_bounds['y_min']) / self.grid_resolution)
-        return (grid_x, grid_y)
+        return self.grid_manager.world_to_grid(x, y)
 
     def grid_to_world(self, grid_x, grid_y):
-        x = self.map_bounds['x_min'] + (grid_x + 0.5) * self.grid_resolution
-        y = self.map_bounds['y_min'] + (grid_y + 0.5) * self.grid_resolution
-        return (x, y)
+        return self.grid_manager.grid_to_world(grid_x, grid_y)
 
     def update_occupancy_grid(self, robot):
         """Update occupancy grid from robot LIDAR data - NUMBA OPTIMIZED."""
@@ -189,117 +156,11 @@ class CoverageMapper:
             return
 
         pos, _ = p.getBasePositionAndOrientation(robot.id)
-        
-        old_explored_count = len(self.explored_cells)
-        
-        self._numba_occupancy.update_from_lidar(
-            (pos[0], pos[1]),
-            robot.lidar_data,
-            self.occupancy_grid,
-            self.explored_cells,
-            self.obstacle_cells
-        )
-        
-        if len(self.explored_cells) > old_explored_count:
-            robot_cell = self.world_to_grid(pos[0], pos[1])
-            lidar_range_cells = int(15.0 / self.grid_resolution) + 1 
-            
-            for dx in range(-lidar_range_cells, lidar_range_cells + 1):
-                for dy in range(-lidar_range_cells, lidar_range_cells + 1):
-                    cell = (robot_cell[0] + dx, robot_cell[1] + dy)
-                    if cell in self.explored_cells:
-                        self._frontier_candidates.add(cell)
+        self.grid_manager.update_occupancy_grid((pos[0], pos[1]), robot.lidar_data)
 
     def detect_frontiers(self, use_cache=False):
-        """
-        Detect and cluster frontier cells - OPTIMIZED with candidate tracking.
-        """
-        if use_cache and self._cached_frontiers is not None and len(self._cached_frontiers) > 0:
-            return self._cached_frontiers
-        
-        if self._grid_bounds is None:
-            self._grid_bounds = {
-                'min_gx': int((self.map_bounds['x_min'] - self.map_bounds['x_min']) / self.grid_resolution),
-                'max_gx': int((self.map_bounds['x_max'] - self.map_bounds['x_min']) / self.grid_resolution),
-                'min_gy': int((self.map_bounds['y_min'] - self.map_bounds['y_min']) / self.grid_resolution),
-                'max_gy': int((self.map_bounds['y_max'] - self.map_bounds['y_min']) / self.grid_resolution),
-            }
-        
-        gb = self._grid_bounds
-        neighbor_offsets = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
-        
-        if self._frontier_candidates:
-            cells_to_check = self._frontier_candidates
-        else:
-            cells_to_check = self.explored_cells
-        
-        frontiers = set()
-        occupancy = self.occupancy_grid 
-        non_frontier_candidates = set()
-        
-        for cell in cells_to_check:
-            if cell not in self.explored_cells:
-                non_frontier_candidates.add(cell)
-                continue
-            if occupancy.get(cell) != 1:
-                non_frontier_candidates.add(cell)
-                continue
-                
-            x, y = cell
-            is_frontier = False
-            has_all_neighbors_known = True
-            
-            for dx, dy in neighbor_offsets:
-                nx, ny = x + dx, y + dy
-                if not (gb['min_gx'] <= nx <= gb['max_gx'] and gb['min_gy'] <= ny <= gb['max_gy']):
-                    continue
-                if (nx, ny) not in occupancy:
-                    is_frontier = True
-                    has_all_neighbors_known = False
-                    break
-            
-            if is_frontier:
-                frontiers.add(cell)
-            elif has_all_neighbors_known:
-                non_frontier_candidates.add(cell)
-        
-        self._frontier_candidates -= non_frontier_candidates
-        
-        if not frontiers:
-            self._cached_frontiers = []
-            return []
-
-        from collections import deque
-        frontier_list = frontiers
-        visited = set()
-        clusters = []
-
-        for f in frontier_list:
-            if f in visited:
-                continue
-            cluster = []
-            queue = deque([f])
-            visited.add(f)
-            
-            while queue:
-                current = queue.popleft()
-                cluster.append(current)
-                cx, cy = current
-                for dx, dy in neighbor_offsets:
-                    nbr = (cx + dx, cy + dy)
-                    if nbr in frontier_list and nbr not in visited:
-                        visited.add(nbr)
-                        queue.append(nbr)
-            
-            if len(cluster) > 6:
-                avg_x = sum(c[0] for c in cluster) / len(cluster)
-                avg_y = sum(c[1] for c in cluster) / len(cluster)
-                best_point = min(cluster, key=lambda p: (p[0] - avg_x)**2 + (p[1] - avg_y)**2)
-                wx, wy = self.grid_to_world(best_point[0], best_point[1])
-                clusters.append({'pos': (wx, wy), 'grid_pos': best_point, 'size': len(cluster)})
-
-        self._cached_frontiers = clusters
-        return clusters
+        """Detect and cluster frontier cells - OPTIMIZED with candidate tracking."""
+        return self.grid_manager.detect_frontiers(use_cache)
 
     def plan_path_astar(self, start_grid, goal_grid):
         """
@@ -307,8 +168,8 @@ class CoverageMapper:
         Uses Numba JIT compilation for 6-18x speedup.
         """
         self._numba_astar.update_grid(
-            self.occupancy_grid,
-            self.obstacle_cells,
+            self.grid_manager.occupancy_grid,
+            self.grid_manager.obstacle_cells,
             self.safety_margin
         )
         path = self._numba_astar.plan_path(start_grid, goal_grid, use_inflation=True)
@@ -483,54 +344,11 @@ class CoverageMapper:
             print(f"Robot {robot.id}: Returning home with {len(robot.path)} waypoints")
 
     def calculate_coverage(self, use_cache=True):
-        """
-        Calculate coverage percentage - INCREMENTAL VERSION.
-        """
-        if self.total_free_cells == 0:
-            return 0.0
+        """Calculate coverage percentage - INCREMENTAL VERSION."""
+        return self.grid_manager.calculate_coverage(use_cache)
 
-        current_count = len(self.explored_cells)
-        if use_cache and current_count == len(self._processed_explored_cells):
-            return self._cached_coverage
-
-        new_cells = self.explored_cells - self._processed_explored_cells
-        
-        if not new_cells:
-            return self._cached_coverage
-        
-        maze_h, maze_w = self.env.maze_grid.shape
-        maze_grid = self.env.maze_grid
-        x_min = self.map_bounds['x_min']
-        y_min = self.map_bounds['y_min']
-        grid_res = self.grid_resolution
-        half_block = self._maze_half_block
-        inv_block_size = self._maze_inv_block_size
-        
-        new_valid_count = 0
-        for cell in new_cells:
-            wx = x_min + (cell[0] + 0.5) * grid_res
-            wy = y_min + (cell[1] + 0.5) * grid_res
-            
-            mx = int((wx + half_block) * inv_block_size)
-            my = int((wy + half_block) * inv_block_size)
-            
-            if 0 <= mx < maze_w and 0 <= my < maze_h:
-                if maze_grid[my, mx] == 0:
-                    new_valid_count += 1
-        
-        self._incremental_valid_count += new_valid_count
-        self._processed_explored_cells.update(new_cells)
-        
-        coverage_percent = min(100.0, (self._incremental_valid_count / self.total_free_cells) * 100)
-        
-        self._cached_coverage = coverage_percent
-        self._coverage_cache_valid = True
-        self._coverage_explored_count = current_count
-        
-        return coverage_percent
-    
     def invalidate_coverage_cache(self):
-        self._coverage_cache_valid = False
+        self.grid_manager.invalidate_coverage_cache()
 
 
     def run_simulation(self, steps=5000, scan_interval=10, use_gui=True, realtime_viz=True,
@@ -634,8 +452,8 @@ class CoverageMapper:
                     if robot.mode != 'HOME':
                         robot.update_global_graph()
 
-                self._coverage_cache_valid = False
-                self._cached_frontiers = None
+                self.grid_manager.invalidate_coverage_cache()
+                self.grid_manager.invalidate_frontier_cache()
                 
                 coverage = self.calculate_coverage()
                 self.coverage_history.append((step, coverage))
@@ -706,7 +524,7 @@ class CoverageMapper:
         print("\nSimulation complete!")
         final_coverage = self.calculate_coverage()
         print(f"Final Coverage: {final_coverage:.2f}%")
-        print(f"Explored Free Cells: {int(final_coverage/100 * self.total_free_cells)}/{int(self.total_free_cells)}")
+        print(f"Explored Free Cells: {int(final_coverage/100 * self.grid_manager.total_free_cells)}/{int(self.grid_manager.total_free_cells)}")
 
         return None
 

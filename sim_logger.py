@@ -31,11 +31,11 @@ class SimulationLogger:
             'timestamp': self.start_time.isoformat(),
             'env_config': env_config,
             'map_bounds': mapper.map_bounds.copy(),
-            'grid_resolution': mapper.grid_resolution,
+            'grid_resolution': mapper.grid_manager.grid_resolution,
             'num_robots': len(mapper.robots),
             'robot_colors': [robot.color for robot in mapper.robots],
             'robot_home_positions': [robot.home_position.tolist() for robot in mapper.robots],
-            'total_free_cells': mapper.total_free_cells,
+            'total_free_cells': mapper.grid_manager.total_free_cells,
             'maze_grid': mapper.env.maze_grid.copy(),
         }
 
@@ -53,9 +53,9 @@ class SimulationLogger:
 
         # 1. Calculate Occupancy Grid Delta
         # Compare current grid with the last saved state
-        current_grid = mapper.occupancy_grid
+        current_grid = mapper.grid_manager.occupancy_grid
         delta = []
-        
+
         # We assume cells only change from unknown -> free/obstacle, or rarely free <-> obstacle
         # Since the mapper accumulates keys, we iterate the mapper's grid
         for cell, val in current_grid.items():
@@ -73,10 +73,10 @@ class SimulationLogger:
 
             # DELTA ENCODING: Store only the changes
             'occupancy_grid_delta': delta,
-            
+
             # These lists are relatively small, so we store them fully
-            'explored_cells': [list(c) for c in mapper.explored_cells],
-            'obstacle_cells': [list(c) for c in mapper.obstacle_cells],
+            'explored_cells': [list(c) for c in mapper.grid_manager.explored_cells],
+            'obstacle_cells': [list(c) for c in mapper.grid_manager.obstacle_cells],
 
             # Frontier data
             'frontiers': mapper.detect_frontiers(),
