@@ -34,10 +34,10 @@ NUM_ROBOTS = 3
 MAX_STEPS = None
 
 # Visualization mode: 'realtime', 'logging', 'both', 'none'
-VIZ_MODE = 'logging'
+VIZ_MODE = 'realtime'
 
 # Automatically render video after simulation (True/False)
-RENDER_VIDEO = True
+RENDER_VIDEO = False
 
 # ============================================================
 

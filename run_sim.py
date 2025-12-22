@@ -1,8 +1,6 @@
 import pybullet as p
 import numpy as np
 import time
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
 import heapq
 from collections import defaultdict
 from environment import MapGenerator, PybulletRenderer
@@ -11,7 +9,7 @@ from robot import Robot
 from pathfinding import NumbaAStarHelper
 from numba_occupancy import NumbaOccupancyGrid
 from sim_config import get_simulation_config, print_config
-from spatial_decomposition import decompose_grid_to_rectangles
+from realtime_visualizer import RealtimeVisualizer
 
 class CoverageMapper:
     """Multi-robot coverage mapper for procedurally generated environments"""
@@ -65,13 +63,10 @@ class CoverageMapper:
         self.total_free_cells = ground_truth_zeros * (self.scale_factor ** 2)
         
         self.coverage_history = []
-        self.realtime_fig = None
-        self.realtime_axes = None
         self.claimed_goals = {}
-        
-        # Zoom/View Control
-        self.current_xlim = None
-        self.current_ylim = None
+
+        # Real-time visualization
+        self.visualizer = RealtimeVisualizer(self)
         
         # Utility function weights
         self.direction_bias_weight = 2.5  # How much to reward forward motion
@@ -533,246 +528,6 @@ class CoverageMapper:
     def invalidate_coverage_cache(self):
         self._coverage_cache_valid = False
 
-    def setup_realtime_visualization(self):
-        plt.ion()
-        self.realtime_fig = plt.figure(figsize=(18, 14))
-        gs = self.realtime_fig.add_gridspec(2, 2, height_ratios=[3, 1], hspace=0.25, wspace=0.2)
-
-        self.realtime_axes = {
-            'grid': self.realtime_fig.add_subplot(gs[0, 0]),
-            'frontier': self.realtime_fig.add_subplot(gs[0, 1]),
-            'coverage': self.realtime_fig.add_subplot(gs[1, :])
-        }
-
-        title = 'Multi-Robot Coverage Mapping\n(Scroll to Zoom, "P" to toggle decomposition)'
-        self.realtime_fig.suptitle(title, fontsize=14, fontweight='bold')
-        self.realtime_fig.canvas.mpl_connect('scroll_event', self.on_scroll)
-        self.realtime_fig.canvas.mpl_connect('key_press_event', self.on_key_press)
-        plt.show(block=False)
-
-    def on_key_press(self, event):
-        if event.key == 'p' or event.key == 'P':
-            self.show_partitions = not self.show_partitions
-            print(f"\n[Viz] Rectangular Decomposition: {'ON' if self.show_partitions else 'OFF'}")
-
-    def on_scroll(self, event):
-        """Handle mouse scroll for zooming in/out."""
-        if event.inaxes not in [self.realtime_axes['grid'], self.realtime_axes['frontier']]:
-            return
-
-        cur_xlim = event.inaxes.get_xlim()
-        cur_ylim = event.inaxes.get_ylim()
-        
-        xdata = event.xdata 
-        ydata = event.ydata
-        
-        if xdata is None or ydata is None:
-            return
-
-        base_scale = 1.2
-        if event.button == 'up':
-            scale_factor = 1 / base_scale
-        elif event.button == 'down':
-            scale_factor = base_scale
-        else:
-            return
-
-        new_width = (cur_xlim[1] - cur_xlim[0]) * scale_factor
-        new_height = (cur_ylim[1] - cur_ylim[0]) * scale_factor
-
-        relx = (cur_xlim[1] - xdata) / (cur_xlim[1] - cur_xlim[0])
-        rely = (cur_ylim[1] - ydata) / (cur_ylim[1] - cur_ylim[0])
-
-        self.current_xlim = [xdata - new_width * (1 - relx), xdata + new_width * relx]
-        self.current_ylim = [ydata - new_height * (1 - rely), ydata + new_height * rely]
-
-    def update_realtime_visualization(self, step):
-        if self.realtime_fig is None:
-            return
-
-        for ax in self.realtime_axes.values():
-            ax.clear()
-
-        # Update occupancy grid
-        ax_grid = self.realtime_axes['grid']
-        grid_x = int((self.map_bounds['x_max'] - self.map_bounds['x_min']) / self.grid_resolution)
-        grid_y = int((self.map_bounds['y_max'] - self.map_bounds['y_min']) / self.grid_resolution)
-        grid_image = np.ones((grid_y, grid_x, 3)) * 0.7
-
-        for cell, value in self.occupancy_grid.items():
-            gx, gy = cell
-            if 0 <= gx < grid_x and 0 <= gy < grid_y:
-                if value == 1:
-                    grid_image[gy, gx] = [1, 1, 1]
-                elif value == 2:
-                    grid_image[gy, gx] = [0, 0, 0]
-
-        extent = [self.map_bounds['x_min'], self.map_bounds['x_max'],
-                 self.map_bounds['y_min'], self.map_bounds['y_max']]
-        ax_grid.imshow(grid_image, origin='lower', extent=extent, interpolation='nearest')
-
-        # === RECTANGULAR DECOMPOSITION VISUALIZATION ===
-        if self.show_partitions:
-            # Pass max_rects=5 here to limit the visualization
-            rects = decompose_grid_to_rectangles(self.occupancy_grid, max_rects=5)
-            
-            for r in rects:
-                gx, gy, w, h = r
-                # ... (rest of the drawing logic stays the same)
-                # Convert to world coordinates
-                wx, wy = self.grid_to_world(gx, gy)
-                # Correction: grid_to_world returns center. Rect needs bottom-left.
-                # Since w, h are in grid cells, convert size to meters
-                rect_w = w * self.grid_resolution
-                rect_h = h * self.grid_resolution
-                # grid_to_world(gx, gy) returns center of (gx, gy)
-                # Bottom-left of (gx, gy) is center - res/2
-                rect_x = wx - self.grid_resolution/2
-                rect_y = wy - self.grid_resolution/2
-                
-                # Random pastel color
-                color = np.random.rand(3) * 0.5 + 0.5
-                rect_patch = patches.Rectangle(
-                    (rect_x, rect_y), rect_w, rect_h,
-                    linewidth=1, edgecolor='black', facecolor=(*color, 0.3)
-                )
-                ax_grid.add_patch(rect_patch)
-
-
-        color_names = ['red', 'green', 'blue', 'yellow', 'magenta', 'cyan', 'orange', 'purple',
-                       'gray', 'pink', 'darkgreen', 'brown', 'navy', 'lime', 'salmon', 'teal']
-        
-        for i, robot in enumerate(self.robots):
-            color = color_names[i % len(color_names)]
-            
-            for edge in robot.global_graph_edges:
-                n1, n2 = edge
-                if n1 < len(robot.global_graph_nodes) and n2 < len(robot.global_graph_nodes):
-                    p1 = robot.global_graph_nodes[n1]
-                    p2 = robot.global_graph_nodes[n2]
-                    ax_grid.plot([p1[0], p2[0]], [p1[1], p2[1]], 
-                               c=color, linewidth=1, alpha=0.3, linestyle='-')
-            
-            if robot.global_graph_nodes:
-                nodes_arr = np.array(robot.global_graph_nodes)
-                ax_grid.scatter(nodes_arr[:, 0], nodes_arr[:, 1], 
-                              c=color, s=15, alpha=0.5, marker='o', zorder=3)
-                
-                ax_grid.scatter(robot.home_position[0], robot.home_position[1],
-                              c=color, s=100, marker='s', edgecolors='white', 
-                              linewidths=2, zorder=4, label=f'R{i} Home' if i == 0 else '')
-        
-        for i, robot in enumerate(self.robots):
-            color = color_names[i % len(color_names)]
-            
-            if robot.trajectory:
-                traj = np.array(robot.trajectory)
-                ax_grid.plot(traj[:, 0], traj[:, 1], c=color, linewidth=1.5, alpha=0.6)
-            
-            if robot.path:
-                path_world = [self.grid_to_world(p[0], p[1]) for p in robot.path]
-                path_arr = np.array(path_world)
-                ax_grid.plot(path_arr[:, 0], path_arr[:, 1], c=color, linestyle=':', linewidth=2)
-
-            pos, _ = p.getBasePositionAndOrientation(robot.id)
-            ax_grid.scatter(pos[0], pos[1], c=color, s=100, marker='^',
-                          edgecolors='black', linewidths=1.5, zorder=5)
-            
-            arrow_len = 1.5
-            ax_grid.arrow(pos[0], pos[1], 
-                         robot.exploration_direction[0] * arrow_len,
-                         robot.exploration_direction[1] * arrow_len,
-                         head_width=0.3, head_length=0.2, fc=color, ec='black',
-                         alpha=0.7, zorder=6)
-
-            if robot.goal is not None:
-                ax_grid.scatter(robot.goal[0], robot.goal[1], c=color, s=150,
-                              marker='X', edgecolors='white', linewidths=2, zorder=6)
-
-        if self.current_xlim is None or self.current_ylim is None:
-            bounds_margin = 5
-            self.current_xlim = [self.map_bounds['x_min'] - bounds_margin, self.map_bounds['x_max'] + bounds_margin]
-            self.current_ylim = [self.map_bounds['y_min'] - bounds_margin, self.map_bounds['y_max'] + bounds_margin]
-
-        ax_grid.set_xlim(self.current_xlim)
-        ax_grid.set_ylim(self.current_ylim)
-        
-        ax_grid.set_aspect('equal')
-        ax_grid.grid(True, alpha=0.3)
-        
-        status = "RETURNING HOME" if self.returning_home else "EXPLORING"
-        decomp_status = " | [P]artitions: ON" if self.show_partitions else ""
-        ax_grid.set_title(f'Occupancy Grid + Global Graph | Status: {status}{decomp_status}')
-
-        coverage = self.calculate_coverage()
-        total_nodes = sum(len(r.global_graph_nodes) for r in self.robots)
-        ax_grid.text(0.02, 0.98, f'Coverage: {coverage:.1f}%\nGraph nodes: {total_nodes}',
-                    transform=ax_grid.transAxes, verticalalignment='top',
-                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.9))
-
-        ax_frontier = self.realtime_axes['frontier']
-        frontiers_data = self.detect_frontiers()
-        
-        explored_points = []
-        for cell in self.explored_cells:
-            if self.occupancy_grid.get(cell) == 1:
-                x, y = self.grid_to_world(cell[0], cell[1])
-                explored_points.append([x, y])
-
-        if explored_points:
-            explored_array = np.array(explored_points)
-            ax_frontier.scatter(explored_array[:, 0], explored_array[:, 1],
-                              c='lightblue', s=3, alpha=0.4, marker='s')
-
-        obstacle_points = []
-        for cell in self.obstacle_cells:
-            x, y = self.grid_to_world(cell[0], cell[1])
-            obstacle_points.append([x, y])
-
-        if obstacle_points:
-            obstacle_array = np.array(obstacle_points)
-            ax_frontier.scatter(obstacle_array[:, 0], obstacle_array[:, 1],
-                              c='black', s=3, marker='s')
-
-        if frontiers_data:
-            frontier_points = [f['pos'] for f in frontiers_data]
-            frontier_array = np.array(frontier_points)
-            ax_frontier.scatter(frontier_array[:, 0], frontier_array[:, 1],
-                              c='yellow', s=50, marker='o', edgecolors='red',
-                              linewidths=2, label='Frontier Targets', zorder=10)
-
-        for i, robot in enumerate(self.robots):
-            color = color_names[i % len(color_names)]
-            pos, _ = p.getBasePositionAndOrientation(robot.id)
-            ax_frontier.scatter(pos[0], pos[1], c=color, s=150, marker='^',
-                              edgecolors='black', linewidths=2, zorder=6)
-
-        ax_frontier.set_xlim(self.current_xlim)
-        ax_frontier.set_ylim(self.current_ylim)
-        
-        ax_frontier.set_aspect('equal')
-        ax_frontier.grid(True, alpha=0.3)
-        ax_frontier.set_title(f'Frontier Detection\n({len(frontiers_data)} targets)')
-        ax_frontier.set_xlabel('X (meters)')
-        ax_frontier.set_ylabel('Y (meters)')
-
-        ax_coverage = self.realtime_axes['coverage']
-        if self.coverage_history:
-            steps, coverage_values = zip(*self.coverage_history)
-            ax_coverage.plot(steps, coverage_values, linewidth=2, color='blue')
-            ax_coverage.fill_between(steps, coverage_values, alpha=0.3, color='blue')
-            ax_coverage.axhline(y=coverage, color='red', linestyle='--', alpha=0.5)
-
-        ax_coverage.set_xlabel('Simulation Step')
-        ax_coverage.set_ylabel('Coverage (%)')
-        ax_coverage.set_title('Coverage Progress (Direction Bias Enabled)')
-        ax_coverage.grid(True, alpha=0.3)
-        ax_coverage.set_ylim(0, 100)
-        ax_coverage.set_xlim(0, max(2000, step))
-
-        self.realtime_fig.canvas.draw()
-        self.realtime_fig.canvas.flush_events()
-        plt.pause(0.001)
 
     def run_simulation(self, steps=5000, scan_interval=10, use_gui=True, realtime_viz=True, 
                        viz_update_interval=50, viz_mode='realtime', log_path='./logs'):
@@ -801,7 +556,7 @@ class CoverageMapper:
 
         if do_realtime:
             print("Setting up real-time visualization...")
-            self.setup_realtime_visualization()
+            self.visualizer.setup()
             
         if do_logging:
             self.logger = SimulationLogger(log_dir=log_path)
@@ -886,7 +641,7 @@ class CoverageMapper:
             t0 = time.perf_counter()
             if step % viz_update_interval == 0:
                 if do_realtime:
-                    self.update_realtime_visualization(step)
+                    self.visualizer.update(step)
                 if do_logging:
                     self.logger.log_frame(step, self)
             perf_stats['visualization'] += time.perf_counter() - t0
@@ -932,7 +687,7 @@ class CoverageMapper:
         print(f"  Average speed: {step/total_time:.0f} steps/second")
 
         if do_realtime:
-            self.update_realtime_visualization(step)
+            self.visualizer.update(step)
             print("\nReal-time visualization complete.")
             
         if do_logging:
@@ -993,8 +748,7 @@ def main():
             print(f"\nTo replay this simulation interactively, run:")
             print(f"  python playback.py {log_filepath}")
     finally:
-        if mapper.realtime_fig is not None:
-            plt.close(mapper.realtime_fig)
+        mapper.visualizer.close()
         mapper.cleanup()
         print("PyBullet disconnected")
 
