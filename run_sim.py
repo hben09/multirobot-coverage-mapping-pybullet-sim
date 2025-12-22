@@ -45,17 +45,32 @@ class SimulationManager:
             lidar_config=self.config['sensors']['lidar']
         )
 
+        # Safety margin (needed before grid initialization)
+        self.safety_margin = self.env_cfg['safety_margin']
+
+        # Numba A* helper (needed before grid initialization)
+        self._numba_astar = NumbaAStarHelper()
+
         # Initialize occupancy grid manager
         self.grid_manager = OccupancyGridManager(
-            self.map_bounds, 
-            self.plan_cfg['grid_resolution'], 
+            self.map_bounds,
+            self.plan_cfg['grid_resolution'],
             self.env
         )
+
+        # Inject planning dependencies into robot agents
+        # (Simulates robots subscribing to "map server" in ROS)
+        for robot in self.robots:
+            robot.agent.set_planning_dependencies(
+                grid_manager=self.grid_manager,
+                planner=self._numba_astar,
+                safety_margin=self.safety_margin
+            )
 
         # Initialize coordination controller
         coord_cfg = self.plan_cfg['coordination']
         util_weights = self.plan_cfg['utility_weights']
-        
+
         self.coordinator = CoordinationController(
             direction_bias_weight=util_weights['direction_bias'],
             size_weight=util_weights['size'],
@@ -74,12 +89,6 @@ class SimulationManager:
         self.return_home_coverage = self.plan_cfg['return_home_coverage']
         self.returning_home = False
         self.robots_home = set()
-
-        # Safety margin
-        self.safety_margin = self.env_cfg['safety_margin']
-
-        # Numba A* helper
-        self._numba_astar = NumbaAStarHelper()
         
         # Logging
         self.logger = None
@@ -103,16 +112,6 @@ class SimulationManager:
         """Detect and cluster frontier cells."""
         return self.grid_manager.detect_frontiers(use_cache)
 
-    def plan_path_astar(self, start_grid, goal_grid):
-        """A* Pathfinding on the occupancy grid."""
-        self._numba_astar.update_grid(
-            self.grid_manager.occupancy_grid,
-            self.grid_manager.obstacle_cells,
-            self.safety_margin
-        )
-        path = self._numba_astar.plan_path(start_grid, goal_grid, use_inflation=True)
-        return path
-    
     def calculate_utility(self, robot, frontier):
         """Utility Function."""
         return self.coordinator.calculate_utility(robot, frontier)
@@ -123,9 +122,7 @@ class SimulationManager:
         self.coordinator.assign_global_goals(
             self.robots,
             frontiers,
-            step,
-            self.world_to_grid,
-            self.plan_path_astar
+            step
         )
 
     def exploration_logic(self, robot, should_sense=True):
@@ -139,17 +136,12 @@ class SimulationManager:
         # Use the robot's autonomous agent to execute sense-think-act cycle
         robot.agent.update(
             should_sense=should_sense,
-            plan_return_path_fn=self.plan_return_path_for_robot,
             grid_to_world_fn=self.grid_to_world
         )
 
-    def plan_return_path_for_robot(self, robot):
-        """Plan a path home for a single robot using A*."""
-        self.coordinator.plan_return_path(robot, self.world_to_grid, self.plan_path_astar)
-
     def trigger_return_home(self):
-        """Trigger all robots to return to their home positions using A*."""
-        self.coordinator.trigger_return_home(self.robots, self.world_to_grid, self.plan_path_astar)
+        """Trigger all robots to return to their home positions."""
+        self.coordinator.trigger_return_home(self.robots)
 
     def calculate_coverage(self, use_cache=True):
         """Calculate coverage percentage."""

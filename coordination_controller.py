@@ -4,8 +4,11 @@ CoordinationController - Manages multi-robot task assignment and coordination.
 This class now serves as a facade that orchestrates:
 - Task allocation (via TaskAllocator)
 - Utility calculation (via FrontierUtilityCalculator)
-- Path planning coordination
-- Behavior execution
+- Goal assignment (the "what", not the "how")
+
+Path planning is now decentralized - each robot plans its own path to assigned goals.
+This follows professional robotics patterns where a fleet manager assigns destinations,
+but individual robots are responsible for navigation.
 """
 
 import numpy as np
@@ -70,19 +73,20 @@ class CoordinationController:
             frontier_size=frontier['size']
         )
 
-    def assign_global_goals(self, robots, frontiers, step, world_to_grid_fn, plan_path_fn):
+    def assign_global_goals(self, robots, frontiers, step):
         """
         Assign goals to robots using market-based coordination (Global Best-First).
+
+        The coordinator now ONLY assigns goals (the "what"), not paths (the "how").
+        Each robot is responsible for planning its own path to the assigned goal.
 
         Args:
             robots: List of RobotContainer objects
             frontiers: List of frontier dicts from frontier detection
             step: Current simulation step
-            world_to_grid_fn: Function to convert world coords to grid coords
-            plan_path_fn: Function to plan path (start_grid, goal_grid) -> path
 
         Returns:
-            None (modifies robot goals and paths in place)
+            None (modifies robot goals in place)
         """
         if not frontiers:
             return
@@ -117,111 +121,49 @@ class CoordinationController:
                 should_replan = assignment['should_replan']
                 utility = assignment['utility']
 
-                # Update goal
-                robot.state.goal = frontier['pos']
-
-                # Plan path if needed
+                # If we need to replan, let the robot plan its own path
                 if should_replan:
                     robot.stuck_detector.reset(robot.state, robot.driver)
                     robot.state.goal_attempts = 0
 
-                    # Get current position and plan path
-                    pos, _ = p.getBasePositionAndOrientation(robot.state.id)
-                    start_grid = world_to_grid_fn(pos[0], pos[1])
-                    path = plan_path_fn(start_grid, frontier['grid_pos'])
+                    # Robot plans its own path to the goal
+                    success = robot.agent.plan_path_to_goal(frontier['pos'])
 
-                    if path:
-                        robot.state.path = path
+                    if success:
                         print(f"Robot {robot_id}: Assigned goal (Utility: {utility:.1f})")
                     else:
                         # Path planning failed - blacklist this frontier
                         robot.state.goal = None
                         robot.state.blacklisted_goals[frontier['grid_pos']] = step + 500
                         print(f"Robot {robot_id}: Path failed to {frontier['grid_pos']}, blacklisted.")
+                else:
+                    # Keep existing goal (no replanning needed)
+                    robot.state.goal = frontier['pos']
             else:
                 # Robot was not assigned - clear goal
                 if robot.state.goal is not None:
                     robot.state.goal = None
                     robot.state.path = []
 
-    def plan_return_path(self, robot, world_to_grid_fn, plan_path_fn):
-        """
-        Plan a path home for a single robot.
-
-        Args:
-            robot: RobotContainer object
-            world_to_grid_fn: Function to convert world coords to grid coords
-            plan_path_fn: Function to plan path (start_grid, goal_grid) -> path
-
-        Returns:
-            None (modifies robot goal and path in place)
-        """
-        pos, _ = p.getBasePositionAndOrientation(robot.state.id)
-        start_grid = world_to_grid_fn(pos[0], pos[1])
-        home_grid = world_to_grid_fn(robot.state.home_position[0], robot.state.home_position[1])
-
-        robot.state.path = plan_path_fn(start_grid, home_grid)
-        if robot.state.path:
-            robot.state.goal = tuple(robot.state.home_position)
-            robot.stuck_detector.reset(robot.state, robot.driver)
-
-    def trigger_return_home(self, robots, world_to_grid_fn, plan_path_fn):
+    def trigger_return_home(self, robots):
         """
         Trigger all robots to return to their home positions.
 
+        The coordinator only sets the mode - each robot plans its own path home.
+
         Args:
             robots: List of RobotContainer objects
-            world_to_grid_fn: Function to convert world coords to grid coords
-            plan_path_fn: Function to plan path (start_grid, goal_grid) -> path
 
         Returns:
-            None (modifies robot modes, goals, and paths in place)
+            None (modifies robot modes in place)
         """
         for robot in robots:
             robot.state.mode = 'RETURNING_HOME'
-            self.plan_return_path(robot, world_to_grid_fn, plan_path_fn)
-            print(f"Robot {robot.state.id}: Returning home with {len(robot.state.path)} waypoints")
 
-    def execute_exploration_logic(self, robot, step, plan_return_path_fn):
-        """
-        Execute exploration logic for a single robot.
+            # Robot plans its own path home
+            success = robot.agent.plan_path_home()
 
-        Args:
-            robot: RobotContainer object
-            step: Current simulation step
-            plan_return_path_fn: Function to plan return path for robot
-
-        Returns:
-            None (commands robot movement)
-        """
-        if robot.state.mode == 'HOME':
-            robot.driver.set_velocity(0.0, 0.0)
-            return
-
-        if robot.state.goal:
-            if robot.stuck_detector.is_stuck(robot.state, robot.driver):
-                print(f"Robot {robot.state.id} is stuck! Abandoning goal and replanning...")
-                robot.state.goal = None
-                robot.state.path = []
-                robot.stuck_detector.reset(robot.state, robot.driver)
-                robot.state.goal_attempts += 1
-
-                if robot.state.goal_attempts > robot.state.max_goal_attempts:
-                    robot.driver.set_velocity(0.0, 2.0)
-                    robot.state.goal_attempts = 0
-                return
-
-            # Follow path requires mapper context
-            # This stays in the main class for now
-            return 'FOLLOW_PATH'
-        else:
-            if robot.state.mode == 'RETURNING_HOME':
-                plan_return_path_fn(robot)
-                if robot.state.goal:
-                    return 'FOLLOW_PATH'
-                else:
-                    robot.driver.set_velocity(0.0, 0.5)
+            if success:
+                print(f"Robot {robot.state.id}: Returning home with {len(robot.state.path)} waypoints")
             else:
-                robot.driver.set_velocity(0.0, 0.5)
-
-        return None
+                print(f"Robot {robot.state.id}: Failed to plan path home")

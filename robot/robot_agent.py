@@ -12,12 +12,16 @@ In professional robotics:
 The simulation loop simply "ticks" agents; it doesn't micromanage them.
 """
 
-from typing import Tuple, Optional, Callable
+from typing import Tuple, Optional, Callable, TYPE_CHECKING
 from robot.robot_state import RobotState
 from robot.robot_driver import RobotDriver
 from behaviors.stuck_detector import StuckDetector
 from behaviors.path_follower import PathFollower
 from behaviors.exploration_direction_tracker import ExplorationDirectionTracker
+
+if TYPE_CHECKING:
+    from occupancy_grid_manager import OccupancyGridManager
+    from pathfinding import NumbaAStarHelper
 
 
 class RobotAgent:
@@ -27,11 +31,11 @@ class RobotAgent:
     This is the "brain" of the robot that runs independently.
     It handles:
     - Sensing (LIDAR scans)
-    - Thinking (stuck detection, path following)
+    - Thinking (stuck detection, path planning, path following)
     - Acting (velocity commands)
 
     The agent operates autonomously once initialized and only needs
-    external coordination for goal assignment.
+    external coordination for goal assignment (not path planning).
     """
 
     def __init__(
@@ -42,7 +46,10 @@ class RobotAgent:
         path_follower: PathFollower,
         direction_tracker: ExplorationDirectionTracker,
         lidar_num_rays: int = 360,
-        lidar_max_range: float = 10.0
+        lidar_max_range: float = 10.0,
+        grid_manager: Optional['OccupancyGridManager'] = None,
+        planner: Optional['NumbaAStarHelper'] = None,
+        safety_margin: float = 0.3
     ):
         """
         Initialize the robot agent.
@@ -55,6 +62,9 @@ class RobotAgent:
             direction_tracker: Exploration direction tracker
             lidar_num_rays: Number of LIDAR rays
             lidar_max_range: Maximum LIDAR range (meters)
+            grid_manager: Occupancy grid manager (simulates "map server" subscription)
+            planner: Path planner instance
+            safety_margin: Safety margin for obstacle inflation
         """
         self.state = state
         self.driver = driver
@@ -65,6 +75,11 @@ class RobotAgent:
         # LIDAR configuration
         self.lidar_num_rays = lidar_num_rays
         self.lidar_max_range = lidar_max_range
+
+        # Planning dependencies (simulating map server access)
+        self.grid_manager = grid_manager
+        self.planner = planner
+        self.safety_margin = safety_margin
 
     def sense(self):
         """
@@ -98,11 +113,12 @@ class RobotAgent:
         This method:
         1. Checks if robot is stuck
         2. Handles stuck recovery
-        3. Determines navigation action
+        3. Plans paths autonomously when needed
+        4. Determines navigation action
 
         Args:
-            plan_return_path_fn: Optional function to plan return path
-                                 Should accept (robot_agent) and plan path home
+            plan_return_path_fn: DEPRECATED - kept for backward compatibility
+                                Robot now plans its own paths
 
         Returns:
             Action command: 'FOLLOW_PATH', None, etc.
@@ -125,6 +141,11 @@ class RobotAgent:
                     self.state.goal_attempts = 0
                     return 'SPIN'
 
+                # If returning home, try to replan path home
+                if self.state.mode == 'RETURNING_HOME':
+                    if self.plan_path_home():
+                        return 'FOLLOW_PATH'
+
                 return None
 
             # We have a goal and we're not stuck - follow the path
@@ -133,11 +154,9 @@ class RobotAgent:
         # 3. No goal - handle based on mode
         else:
             if self.state.mode == 'RETURNING_HOME':
-                # Try to plan a path home if function provided
-                if plan_return_path_fn:
-                    plan_return_path_fn(self)
-                    if self.state.goal:
-                        return 'FOLLOW_PATH'
+                # Autonomously plan path home
+                if self.plan_path_home():
+                    return 'FOLLOW_PATH'
 
                 # Couldn't plan path home - just spin slowly
                 return 'SPIN_SLOW'
@@ -222,3 +241,73 @@ class RobotAgent:
             return True
 
         return False
+
+    def set_planning_dependencies(
+        self,
+        grid_manager: 'OccupancyGridManager',
+        planner: 'NumbaAStarHelper',
+        safety_margin: float
+    ):
+        """
+        Inject planning dependencies (called after construction).
+
+        In a real ROS system, this simulates subscribing to the map server.
+
+        Args:
+            grid_manager: Occupancy grid manager
+            planner: Path planner instance
+            safety_margin: Safety margin for obstacle inflation
+        """
+        self.grid_manager = grid_manager
+        self.planner = planner
+        self.safety_margin = safety_margin
+
+    def plan_path_to_goal(self, goal_position: Tuple[float, float]) -> bool:
+        """
+        Plan a path from current position to goal position.
+
+        This is the robot's own path planning capability - it receives a goal
+        from the coordinator but plans the path itself using its map access.
+
+        Args:
+            goal_position: Goal position in world coordinates (x, y)
+
+        Returns:
+            True if path planning succeeded, False otherwise
+        """
+        if self.grid_manager is None or self.planner is None:
+            print(f"Robot {self.state.id}: Cannot plan path - no map access!")
+            return False
+
+        # Get current position
+        pos_array, _ = self.driver.get_pose()
+
+        # Convert to grid coordinates
+        start_grid = self.grid_manager.world_to_grid(pos_array[0], pos_array[1])
+        goal_grid = self.grid_manager.world_to_grid(goal_position[0], goal_position[1])
+
+        # Update planner with current grid state
+        self.planner.update_grid(
+            self.grid_manager.occupancy_grid,
+            self.grid_manager.obstacle_cells,
+            self.safety_margin
+        )
+
+        # Plan path
+        path = self.planner.plan_path(start_grid, goal_grid, use_inflation=True)
+
+        if path:
+            self.state.path = path
+            self.state.goal = goal_position
+            return True
+        else:
+            return False
+
+    def plan_path_home(self) -> bool:
+        """
+        Plan a path back to home position.
+
+        Returns:
+            True if path planning succeeded, False otherwise
+        """
+        return self.plan_path_to_goal(tuple(self.state.home_position))
