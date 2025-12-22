@@ -2,49 +2,47 @@
 Simulation Initialization Module
 
 Handles environment setup, map generation, and robot creation for the coverage mapping simulation.
+Refactored to use dictionary-based configuration.
 """
 
 import pybullet as p
 from environment import MapGenerator, PybulletRenderer
 from robot import RobotContainer
-import sim_config as cfg
-
 
 class SimulationInitializer:
     """Handles all initialization logic for the coverage mapping simulation."""
 
-    def __init__(self, use_gui=True, maze_size=(10, 10), cell_size=2.0,
-                 env_seed=None, env_type='maze', num_robots=3, show_partitions=False):
+    def __init__(self, env_config):
         """
-        Initialize simulation parameters.
+        Initialize simulation parameters from configuration dict.
 
         Args:
-            use_gui: Whether to show PyBullet GUI
-            maze_size: Tuple of (width, height) for maze dimensions
-            cell_size: Physical size of each maze cell
-            env_seed: Random seed for environment generation
-            env_type: Type of environment ('maze', 'rooms', etc.)
-            num_robots: Number of robots to create
-            show_partitions: Whether to show rectangular decomposition partitions
+            env_config (dict): 'environment' section of config.yaml
         """
-        self.use_gui = use_gui
-        self.maze_size = maze_size
-        self.cell_size = cell_size
-        self.env_seed = env_seed
-        self.env_type = env_type
-        self.num_robots = num_robots
-        self.show_partitions = show_partitions
+        self.config = env_config
+        
+        self.use_gui = False # This is handled by the renderer, but good to track
+        self.maze_size = (self.config['maze_size'], self.config['maze_size'])
+        self.cell_size = self.config['cell_size']
+        self.env_seed = self.config['seed']
+        self.env_type = self.config['type']
+        
+        # Note: num_robots is now passed to create_robots directly or handled by manager
+        # We store it here if needed for metadata
+        self.num_robots = 0 
 
-    def initialize_environment(self):
+    def initialize_environment(self, use_gui=False):
         """
         Generate maze and create PyBullet environment.
 
+        Args:
+            use_gui (bool): Whether to show the PyBullet GUI.
+
         Returns:
-            tuple: (env, physics_client, map_bounds) where:
-                - env: PybulletRenderer instance
-                - physics_client: PyBullet physics client ID
-                - map_bounds: Dictionary with x_min, x_max, y_min, y_max
+            tuple: (env, physics_client, map_bounds)
         """
+        self.use_gui = use_gui
+        
         # Generate the maze grid
         map_generator = MapGenerator(
             maze_size=self.maze_size,
@@ -80,17 +78,20 @@ class SimulationInitializer:
 
         return env, physics_client, map_bounds
 
-    def create_robots(self, env):
+    def create_robots(self, env, robot_config, physics_config):
         """
         Create and configure robots at spawn position.
 
         Args:
             env: PybulletRenderer instance
+            robot_config (dict): 'robots' section of config
+            physics_config (dict): 'physics' section of config
 
         Returns:
-            list: List of Robot instances
+            list: List of RobotContainer instances
         """
         spawn_pos = env.get_spawn_position()
+        self.num_robots = robot_config['count']
 
         all_colors = [
             [1, 0, 0, 1],        # Red
@@ -113,20 +114,25 @@ class SimulationInitializer:
 
         # Calculate start positions with spacing
         start_positions = []
-        spacing = cfg.ROBOT_SPACING
+        spacing = robot_config['spacing']
+        spawn_height = robot_config['spawn_height']
+        
         for i in range(self.num_robots):
             offset = (i - (self.num_robots - 1) / 2) * spacing
-            start_positions.append([spawn_pos[0] + offset, spawn_pos[1], cfg.ROBOT_HEIGHT])
+            start_positions.append([spawn_pos[0] + offset, spawn_pos[1], spawn_height])
 
         colors = [all_colors[i % len(all_colors)] for i in range(self.num_robots)]
 
         robots = []
+        radius = robot_config['radius']
+        mass = robot_config['mass']
+        
         for i, (pos, color) in enumerate(zip(start_positions, colors)):
-            collision_shape = p.createCollisionShape(p.GEOM_SPHERE, radius=cfg.ROBOT_RADIUS)
-            visual_shape = p.createVisualShape(p.GEOM_SPHERE, radius=cfg.ROBOT_RADIUS, rgbaColor=color)
+            collision_shape = p.createCollisionShape(p.GEOM_SPHERE, radius=radius)
+            visual_shape = p.createVisualShape(p.GEOM_SPHERE, radius=radius, rgbaColor=color)
 
             robot_id = p.createMultiBody(
-                baseMass=cfg.ROBOT_MASS,
+                baseMass=mass,
                 baseCollisionShapeIndex=collision_shape,
                 baseVisualShapeIndex=visual_shape,
                 basePosition=pos
@@ -135,9 +141,9 @@ class SimulationInitializer:
             # Configure physics properties
             p.changeDynamics(robot_id, -1, localInertiaDiagonal=[0, 0, 1])
             p.changeDynamics(robot_id, -1,
-                           lateralFriction=cfg.LATERAL_FRICTION,
-                           spinningFriction=cfg.SPINNING_FRICTION,
-                           rollingFriction=cfg.ROLLING_FRICTION)
+                           lateralFriction=physics_config['lateral_friction'],
+                           spinningFriction=physics_config['spinning_friction'],
+                           rollingFriction=physics_config['rolling_friction'])
 
             robot = RobotContainer(robot_id, pos, color)
             robots.append(robot)
@@ -151,10 +157,12 @@ class SimulationInitializer:
         Returns:
             dict: Environment configuration parameters
         """
-        return {
-            'maze_size': self.maze_size,
-            'cell_size': self.cell_size,
-            'env_seed': self.env_seed,
-            'env_type': self.env_type,
-            'num_robots': self.num_robots,
-        }
+        # Return a copy of the config augmented with num_robots for the logger
+        conf = self.config.copy()
+        conf['num_robots'] = self.num_robots
+        
+        # FIX: Backward compatibility for video_renderer/playback which expect 'env_type'
+        if 'type' in conf:
+            conf['env_type'] = conf['type']
+            
+        return conf

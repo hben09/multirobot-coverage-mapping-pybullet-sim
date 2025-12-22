@@ -1,49 +1,66 @@
 import pybullet as p
 import time
 from collections import defaultdict
+import os
+
 from sim_logger import SimulationLogger
 from pathfinding import NumbaAStarHelper
 from occupancy_grid_manager import OccupancyGridManager
 from coordination_controller import CoordinationController
 from simulation_initializer import SimulationInitializer
-from sim_config import get_simulation_config, print_config
-import sim_config as cfg
 from realtime_visualizer import RealtimeVisualizer
+from utils.config_loader import load_config
 
 class SimulationManager:
-    """Manages multi-robot coverage mapping simulation for procedurally generated environments"""
+    """Manages multi-robot coverage mapping simulation."""
 
-    def __init__(self, use_gui=True, maze_size=(10, 10), cell_size=2.0, env_seed=None, env_type='maze', num_robots=3, show_partitions=False, grid_resolution=0.5):
-        self.num_robots = num_robots
-        self.show_partitions = show_partitions  # Flag for rectangular decomposition
+    def __init__(self, config):
+        """
+        Initialize the simulation manager with a configuration dictionary.
+        
+        Args:
+            config (dict): Complete configuration loaded from YAML.
+        """
+        self.config = config
+        self.env_cfg = config['environment']
+        self.robot_cfg = config['robots']
+        self.sys_cfg = config['system']
+        self.plan_cfg = config['planning']
+        
+        self.show_partitions = self.sys_cfg['show_partitions']
 
         # Initialize environment and robots using the initializer
-        initializer = SimulationInitializer(
-            use_gui=use_gui,
-            maze_size=maze_size,
-            cell_size=cell_size,
-            env_seed=env_seed,
-            env_type=env_type,
-            num_robots=num_robots,
-            show_partitions=show_partitions
-        )
+        initializer = SimulationInitializer(self.env_cfg)
 
         # Setup environment
-        self.env, self.physics_client, self.map_bounds = initializer.initialize_environment()
+        self.env, self.physics_client, self.map_bounds = initializer.initialize_environment(
+            use_gui=self.sys_cfg['use_gui']
+        )
 
         # Create robots
-        self.robots = initializer.create_robots(self.env)
+        self.robots = initializer.create_robots(
+            self.env, 
+            self.robot_cfg, 
+            self.config['physics']
+        )
 
         # Initialize occupancy grid manager
-        self.grid_manager = OccupancyGridManager(self.map_bounds, grid_resolution, self.env)
+        self.grid_manager = OccupancyGridManager(
+            self.map_bounds, 
+            self.plan_cfg['grid_resolution'], 
+            self.env
+        )
 
         # Initialize coordination controller
+        coord_cfg = self.plan_cfg['coordination']
+        util_weights = self.plan_cfg['utility_weights']
+        
         self.coordinator = CoordinationController(
-            direction_bias_weight=cfg.DIRECTION_BIAS_WEIGHT,
-            size_weight=cfg.SIZE_WEIGHT,
-            distance_weight=cfg.DISTANCE_WEIGHT,
-            crowding_penalty_weight=cfg.CROWDING_PENALTY_WEIGHT,
-            crowding_radius=cfg.CROWDING_RADIUS
+            direction_bias_weight=util_weights['direction_bias'],
+            size_weight=util_weights['size'],
+            distance_weight=util_weights['distance'],
+            crowding_penalty_weight=coord_cfg['crowding_penalty'],
+            crowding_radius=coord_cfg['crowding_radius']
         )
 
         self.coverage_history = []
@@ -52,13 +69,13 @@ class SimulationManager:
         # Real-time visualization
         self.visualizer = RealtimeVisualizer(self)
 
-        # Return-to-home settings (from config)
-        self.return_home_coverage = cfg.RETURN_HOME_COVERAGE
+        # Return-to-home settings
+        self.return_home_coverage = self.plan_cfg['return_home_coverage']
         self.returning_home = False
         self.robots_home = set()
 
-        # Safety margin (from config)
-        self.safety_margin = cfg.SAFETY_MARGIN
+        # Safety margin
+        self.safety_margin = self.env_cfg['safety_margin']
 
         # Numba A* helper
         self._numba_astar = NumbaAStarHelper()
@@ -74,7 +91,7 @@ class SimulationManager:
         return self.grid_manager.grid_to_world(grid_x, grid_y)
 
     def update_occupancy_grid(self, robot):
-        """Update occupancy grid from robot LIDAR data - NUMBA OPTIMIZED."""
+        """Update occupancy grid from robot LIDAR data."""
         if not robot.state.lidar_data:
             return
 
@@ -82,14 +99,11 @@ class SimulationManager:
         self.grid_manager.update_occupancy_grid((pos[0], pos[1]), robot.state.lidar_data)
 
     def detect_frontiers(self, use_cache=False):
-        """Detect and cluster frontier cells - OPTIMIZED with candidate tracking."""
+        """Detect and cluster frontier cells."""
         return self.grid_manager.detect_frontiers(use_cache)
 
     def plan_path_astar(self, start_grid, goal_grid):
-        """
-        A* Pathfinding on the occupancy grid.
-        Uses Numba JIT compilation for 6-18x speedup.
-        """
+        """A* Pathfinding on the occupancy grid."""
         self._numba_astar.update_grid(
             self.grid_manager.occupancy_grid,
             self.grid_manager.obstacle_cells,
@@ -99,11 +113,11 @@ class SimulationManager:
         return path
     
     def calculate_utility(self, robot, frontier):
-        """Utility Function with Direction Bias and Volumetric Gain."""
+        """Utility Function."""
         return self.coordinator.calculate_utility(robot, frontier)
 
     def assign_global_goals(self, step):
-        """Market-based Coordination loop (Improved: Global Best-First)."""
+        """Market-based Coordination loop."""
         frontiers = self.detect_frontiers()
         self.coordinator.assign_global_goals(
             self.robots,
@@ -138,27 +152,32 @@ class SimulationManager:
         self.coordinator.trigger_return_home(self.robots, self.world_to_grid, self.plan_path_astar)
 
     def calculate_coverage(self, use_cache=True):
-        """Calculate coverage percentage - INCREMENTAL VERSION."""
+        """Calculate coverage percentage."""
         return self.grid_manager.calculate_coverage(use_cache)
 
     def invalidate_coverage_cache(self):
         self.grid_manager.invalidate_coverage_cache()
 
 
-    def run_simulation(self, steps=5000, scan_interval=10, use_gui=True, realtime_viz=True,
-                       viz_update_interval=50, viz_mode='realtime', log_path='./logs', performance_report_interval=3.0):
+    def run_simulation(self, log_path='./logs'):
         """
         Run the simulation with configurable visualization and logging.
         """
         print("Starting multi-robot coverage mapping simulation...")
         
-        if steps is None:
+        # Pull parameters from config
+        max_steps = self.sys_cfg['max_steps']
+        intervals = self.sys_cfg['intervals']
+        viz_mode = self.sys_cfg['viz_mode']
+        
+        if max_steps is None:
             print("Running unlimited steps (press Ctrl+C to stop)...")
         else:
-            print(f"Running for {steps} steps...")
+            print(f"Running for {max_steps} steps...")
 
         do_realtime = viz_mode in ['realtime', 'both']
         do_logging = viz_mode in ['logging', 'both']
+        use_gui = self.sys_cfg['use_gui']
         
         fast_mode = viz_mode == 'logging' and not use_gui
         if fast_mode:
@@ -189,12 +208,14 @@ class SimulationManager:
         start_time = time.perf_counter()
         last_report_time = start_time
         last_report_step = 0
-        report_interval_seconds = performance_report_interval
         
         perf_stats = defaultdict(float)
         
+        # LIDAR parameters
+        lidar_cfg = self.config['sensors']['lidar']
+        
         while True:
-            if steps is not None and step >= steps:
+            if max_steps is not None and step >= max_steps:
                 break
 
             if returning_home and len(robots_home) == num_robots:
@@ -238,10 +259,13 @@ class SimulationManager:
             perf_stats['local_planning'] += time.perf_counter() - t0
 
             t0 = time.perf_counter()
-            if step % scan_interval == 0:
+            if step % intervals['scan'] == 0:
                 for robot in robots:
                     # Perform LIDAR scan and update state
-                    scan_points = robot.hardware.get_lidar_scan(num_rays=cfg.LIDAR_NUM_RAYS, max_range=cfg.LIDAR_MAX_RANGE)
+                    scan_points = robot.hardware.get_lidar_scan(
+                        num_rays=lidar_cfg['num_rays'], 
+                        max_range=lidar_cfg['max_range']
+                    )
                     robot.state.lidar_data = scan_points
                     pos_array, _ = robot.hardware.get_pose()
                     robot.state.trajectory.append((pos_array[0], pos_array[1]))
@@ -259,7 +283,7 @@ class SimulationManager:
             perf_stats['sensing'] += time.perf_counter() - t0
 
             t0 = time.perf_counter()
-            if step % viz_update_interval == 0:
+            if step % intervals['viz_update'] == 0:
                 if do_realtime:
                     self.visualizer.update(step)
                 if do_logging:
@@ -276,7 +300,7 @@ class SimulationManager:
             current_time = time.perf_counter()
             elapsed_since_report = current_time - last_report_time
             
-            if elapsed_since_report >= report_interval_seconds:
+            if elapsed_since_report >= intervals['performance_report']:
                 steps_done = step - last_report_step
                 sps = steps_done / elapsed_since_report if elapsed_since_report > 0 else 0
                 coverage = self.calculate_coverage()
@@ -331,36 +355,27 @@ class SimulationManager:
 
 
 def main():
-    # Get user configuration (environment, visualization settings)
-    user_config = get_simulation_config()
+    # 1. Load Configuration
+    try:
+        cfg = load_config("config/default.yaml")
+        print(f"Loaded configuration from config/default.yaml")
+    except Exception as e:
+        print(f"Failed to load config: {e}")
+        return
 
-    # Print configuration summary
-    print_config(user_config)
+    # 2. Print summary
+    env = cfg['environment']
+    rob = cfg['robots']
+    print(f"\nCreating {env['maze_size']}x{env['maze_size']} {env['type']} "
+          f"with {rob['count']} robots...")
 
-    # Create mapper with configuration
-    mapper = SimulationManager(
-        use_gui=user_config['use_gui'],
-        maze_size=(user_config['maze_size'], user_config['maze_size']),
-        cell_size=user_config['cell_size'],
-        env_seed=user_config['env_seed'],
-        env_type=user_config['env_type'],
-        num_robots=user_config['num_robots'],
-        show_partitions=user_config['show_partitions'],
-        grid_resolution=user_config['grid_resolution']
-    )
+    # 3. Initialize Manager with full config
+    mapper = SimulationManager(cfg)
 
     log_filepath = None
 
     try:
-        log_filepath = mapper.run_simulation(
-            steps=user_config['max_steps'],
-            scan_interval=user_config['scan_interval'],
-            use_gui=user_config['use_gui'],
-            viz_mode=user_config['viz_mode'],
-            viz_update_interval=user_config['viz_update_interval'],
-            log_path='./logs',
-            performance_report_interval=user_config['performance_report_interval']
-        )
+        log_filepath = mapper.run_simulation(log_path='./logs')
 
     except KeyboardInterrupt:
         print("\nSimulation interrupted by user")
@@ -370,12 +385,13 @@ def main():
             print(f"\nTo replay this simulation interactively, run:")
             print(f"  python playback.py {log_filepath}")
     finally:
-        mapper.visualizer.close()
+        if hasattr(mapper, 'visualizer'):
+            mapper.visualizer.close()
         mapper.cleanup()
         print("PyBullet disconnected")
 
     # Handle video rendering
-    if log_filepath is not None and user_config['render_video']:
+    if log_filepath is not None and cfg['system']['render_video']:
         try:
             from video_renderer import render_video_from_log
             print("\nRendering video with OpenCV (fast parallel renderer)...")
