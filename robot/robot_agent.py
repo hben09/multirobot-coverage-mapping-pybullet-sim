@@ -12,7 +12,8 @@ In professional robotics:
 The simulation loop simply "ticks" agents; it doesn't micromanage them.
 """
 
-from typing import Tuple, Optional, Callable, TYPE_CHECKING
+from typing import Tuple, Optional, Callable, TYPE_CHECKING, Dict, Any
+import numpy as np
 from robot.robot_state import RobotState
 from robot.robot_driver import RobotDriver
 from behaviors.stuck_detector import StuckDetector
@@ -22,6 +23,7 @@ from behaviors.exploration_direction_tracker import ExplorationDirectionTracker
 if TYPE_CHECKING:
     from occupancy_grid_manager import OccupancyGridManager
     from pathfinding import NumbaAStarHelper
+    from coordination.utility_calculator import FrontierUtilityCalculator
 
 
 class RobotAgent:
@@ -49,7 +51,8 @@ class RobotAgent:
         lidar_max_range: float = 10.0,
         grid_manager: Optional['OccupancyGridManager'] = None,
         planner: Optional['NumbaAStarHelper'] = None,
-        safety_margin: float = 0.3
+        safety_margin: float = 0.3,
+        utility_calculator: Optional['FrontierUtilityCalculator'] = None
     ):
         """
         Initialize the robot agent.
@@ -65,6 +68,7 @@ class RobotAgent:
             grid_manager: Occupancy grid manager (simulates "map server" subscription)
             planner: Path planner instance
             safety_margin: Safety margin for obstacle inflation
+            utility_calculator: Utility calculator for bid calculation
         """
         self.state = state
         self.driver = driver
@@ -80,6 +84,9 @@ class RobotAgent:
         self.grid_manager = grid_manager
         self.planner = planner
         self.safety_margin = safety_margin
+
+        # Utility calculator for autonomous bidding
+        self.utility_calculator = utility_calculator
 
     def sense(self):
         """
@@ -246,7 +253,8 @@ class RobotAgent:
         self,
         grid_manager: 'OccupancyGridManager',
         planner: 'NumbaAStarHelper',
-        safety_margin: float
+        safety_margin: float,
+        utility_calculator: Optional['FrontierUtilityCalculator'] = None
     ):
         """
         Inject planning dependencies (called after construction).
@@ -257,10 +265,53 @@ class RobotAgent:
             grid_manager: Occupancy grid manager
             planner: Path planner instance
             safety_margin: Safety margin for obstacle inflation
+            utility_calculator: Utility calculator for bid calculation
         """
         self.grid_manager = grid_manager
         self.planner = planner
         self.safety_margin = safety_margin
+        if utility_calculator is not None:
+            self.utility_calculator = utility_calculator
+
+    def calculate_bid(self, frontier: Dict[str, Any]) -> Tuple[float, Dict[str, Any]]:
+        """
+        Calculate bid for a frontier using the robot's internal state.
+
+        This implements the "Auctioneer" pattern where robots calculate their own
+        bids based on their internal state (position, battery, exploration direction).
+        The central server doesn't need to know these details.
+
+        Args:
+            frontier: Frontier dict with 'pos' and 'size'
+
+        Returns:
+            Tuple of (bid_value, debug_info_dict)
+            - bid_value: The robot's bid for this frontier
+            - debug_info: Dictionary with breakdown of bid components
+
+        Raises:
+            ValueError: If utility calculator is not available
+        """
+        if self.utility_calculator is None:
+            raise ValueError(f"Robot {self.state.id}: Cannot calculate bid - no utility calculator!")
+
+        # Get current position from driver (robot's internal state)
+        pos_array, _ = self.driver.get_pose()
+        robot_pos = np.array([pos_array[0], pos_array[1]])
+
+        # Get frontier position
+        frontier_pos = np.array(frontier['pos'])
+
+        # Use utility calculator to compute bid
+        # This uses robot's internal state like exploration_direction
+        bid_value, debug_info = self.utility_calculator.calculate(
+            robot_position=robot_pos,
+            exploration_direction=self.state.exploration_direction,
+            frontier_position=frontier_pos,
+            frontier_size=frontier['size']
+        )
+
+        return bid_value, debug_info
 
     def plan_path_to_goal(self, goal_position: Tuple[float, float]) -> bool:
         """

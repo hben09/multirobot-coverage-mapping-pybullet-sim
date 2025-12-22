@@ -145,6 +145,80 @@ class CoordinationController:
                     robot.state.goal = None
                     robot.state.path = []
 
+    def assign_global_goals_auction(self, robots, frontiers, step):
+        """
+        Assign goals to robots using auction-based coordination.
+
+        AUCTIONEER PATTERN:
+        1. Broadcast frontiers to all agents
+        2. Each agent calculates its own bid
+        3. Assign tasks to highest bidders
+
+        This approach is more realistic because the coordinator doesn't need
+        to know the robot's internal state (battery, precise kinematics, etc.).
+
+        Args:
+            robots: List of RobotContainer objects
+            frontiers: List of frontier dicts from frontier detection
+            step: Current simulation step
+
+        Returns:
+            None (modifies robot goals in place)
+        """
+        if not frontiers:
+            return
+
+        # 1. Set all robots to exploration mode
+        for robot in robots:
+            robot.state.mode = 'GLOBAL_RELOCATE'
+
+        # 2. Extract robot agents for auction
+        robot_agents = [robot.agent for robot in robots]
+
+        # 3. Use TaskAllocator's auction method
+        assignments = self.task_allocator.allocate_tasks_auction(
+            robot_agents=robot_agents,
+            frontiers=frontiers,
+            current_step=step
+        )
+
+        # 4. Apply assignments to robots
+        for robot in robots:
+            robot_id = robot.state.id
+
+            if robot_id in assignments:
+                # Robot was assigned a frontier
+                assignment = assignments[robot_id]
+                frontier = assignment['frontier']
+                should_replan = assignment['should_replan']
+                utility = assignment['utility']
+                bid_debug = assignment.get('bid_debug', {})
+
+                # If we need to replan, let the robot plan its own path
+                if should_replan:
+                    robot.stuck_detector.reset(robot.state, robot.driver)
+                    robot.state.goal_attempts = 0
+
+                    # Robot plans its own path to the goal
+                    success = robot.agent.plan_path_to_goal(frontier['pos'])
+
+                    if success:
+                        print(f"Robot {robot_id}: Assigned goal (Bid: {bid_debug.get('utility', utility):.1f}, "
+                              f"Final: {utility:.1f})")
+                    else:
+                        # Path planning failed - blacklist this frontier
+                        robot.state.goal = None
+                        robot.state.blacklisted_goals[frontier['grid_pos']] = step + 500
+                        print(f"Robot {robot_id}: Path failed to {frontier['grid_pos']}, blacklisted.")
+                else:
+                    # Keep existing goal (no replanning needed)
+                    robot.state.goal = frontier['pos']
+            else:
+                # Robot was not assigned - clear goal
+                if robot.state.goal is not None:
+                    robot.state.goal = None
+                    robot.state.path = []
+
     def trigger_return_home(self, robots):
         """
         Trigger all robots to return to their home positions.

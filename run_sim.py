@@ -58,15 +58,6 @@ class SimulationManager:
             self.env
         )
 
-        # Inject planning dependencies into robot agents
-        # (Simulates robots subscribing to "map server" in ROS)
-        for robot in self.robots:
-            robot.agent.set_planning_dependencies(
-                grid_manager=self.grid_manager,
-                planner=self._numba_astar,
-                safety_margin=self.safety_margin
-            )
-
         # Initialize coordination controller
         coord_cfg = self.plan_cfg['coordination']
         util_weights = self.plan_cfg['utility_weights']
@@ -79,6 +70,16 @@ class SimulationManager:
             crowding_radius=coord_cfg['crowding_radius']
         )
 
+        # Inject planning dependencies into robot agents
+        # (Simulates robots subscribing to "map server" in ROS)
+        for robot in self.robots:
+            robot.agent.set_planning_dependencies(
+                grid_manager=self.grid_manager,
+                planner=self._numba_astar,
+                safety_margin=self.safety_margin,
+                utility_calculator=self.coordinator.utility_calculator
+            )
+
         self.coverage_history = []
         self.claimed_goals = {}
 
@@ -89,7 +90,10 @@ class SimulationManager:
         self.return_home_coverage = self.plan_cfg['return_home_coverage']
         self.returning_home = False
         self.robots_home = set()
-        
+
+        # Auction pattern setting
+        self.use_auction_pattern = self.plan_cfg.get('use_auction_pattern', True)
+
         # Logging
         self.logger = None
         self.env_config = initializer.get_env_config()
@@ -120,6 +124,20 @@ class SimulationManager:
         """Market-based Coordination loop."""
         frontiers = self.detect_frontiers()
         self.coordinator.assign_global_goals(
+            self.robots,
+            frontiers,
+            step
+        )
+
+    def assign_global_goals_auction(self, step):
+        """
+        Auction-based Coordination loop.
+
+        Uses the "Auctioneer" pattern where robots calculate their own bids
+        based on their internal state.
+        """
+        frontiers = self.detect_frontiers()
+        self.coordinator.assign_global_goals_auction(
             self.robots,
             frontiers,
             step
@@ -220,14 +238,18 @@ class SimulationManager:
             
             if should_plan:
                 coverage = self.calculate_coverage(use_cache=False)
-                
+
                 if not returning_home and coverage >= return_home_coverage:
                     print(f"\n*** COVERAGE {coverage:.1f}% >= {return_home_coverage}% - RETURNING HOME ***")
                     returning_home = True
                     self.returning_home = True
                     self.trigger_return_home()
                 elif not returning_home:
-                    self.assign_global_goals(step)
+                    # Use auction pattern if enabled, otherwise use traditional allocation
+                    if self.use_auction_pattern:
+                        self.assign_global_goals_auction(step)
+                    else:
+                        self.assign_global_goals(step)
             
             perf_stats['global_planning'] += time.perf_counter() - t0
 
