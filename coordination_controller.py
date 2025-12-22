@@ -1,15 +1,17 @@
 """
 CoordinationController - Manages multi-robot task assignment and coordination.
 
-This class handles all coordination logic including:
-- Utility calculation for frontier evaluation
-- Market-based goal assignment
-- Crowding penalty and persistence bias
+This class now serves as a facade that orchestrates:
+- Task allocation (via TaskAllocator)
+- Utility calculation (via FrontierUtilityCalculator)
 - Path planning coordination
+- Behavior execution
 """
 
 import numpy as np
 import pybullet as p
+from coordination.utility_calculator import FrontierUtilityCalculator
+from coordination.task_allocator import TaskAllocator
 
 
 class CoordinationController:
@@ -27,20 +29,26 @@ class CoordinationController:
             crowding_penalty_weight: Weight for crowding penalty
             crowding_radius: Radius within which robots interfere with each other
         """
-        # Utility function weights
-        self.direction_bias_weight = direction_bias_weight
-        self.size_weight = size_weight
-        self.distance_weight = distance_weight
+        # Create utility calculator
+        self.utility_calculator = FrontierUtilityCalculator(
+            direction_bias_weight=direction_bias_weight,
+            size_weight=size_weight,
+            distance_weight=distance_weight
+        )
 
-        # Coordination / Crowding weights
-        self.crowding_penalty_weight = crowding_penalty_weight
-        self.crowding_radius = crowding_radius
+        # Create task allocator
+        self.task_allocator = TaskAllocator(
+            utility_calculator=self.utility_calculator,
+            crowding_penalty_weight=crowding_penalty_weight,
+            crowding_radius=crowding_radius
+        )
 
     def calculate_utility(self, robot, frontier):
         """
         Calculate utility of a frontier for a robot.
 
-        Utility Function with Direction Bias and Volumetric Gain.
+        DEPRECATED: This method is kept for compatibility but delegates
+        to the FrontierUtilityCalculator.
 
         Args:
             robot: RobotContainer object
@@ -49,35 +57,25 @@ class CoordinationController:
         Returns:
             tuple: (utility_value, debug_info_dict)
         """
+        # Get robot position from hardware
         pos, orn = p.getBasePositionAndOrientation(robot.state.id)
         robot_pos = np.array([pos[0], pos[1]])
         frontier_pos = np.array(frontier['pos'])
 
-        dist = np.linalg.norm(frontier_pos - robot_pos)
-        distance_cost = dist * self.distance_weight
-        size_gain = frontier['size'] * self.size_weight
-
-        to_frontier = frontier_pos - robot_pos
-        to_frontier_norm = np.linalg.norm(to_frontier)
-
-        if to_frontier_norm > 0.1:
-            to_frontier_unit = to_frontier / to_frontier_norm
-            alignment = np.dot(robot.state.exploration_direction, to_frontier_unit)
-            alignment_normalized = (alignment + 1.0) / 2.0
-            direction_bonus = alignment_normalized * self.direction_bias_weight
-        else:
-            alignment = 0.0
-            direction_bonus = 0.0
-
-        utility = size_gain - distance_cost + direction_bonus
-        return utility, {}
+        # Delegate to utility calculator
+        return self.utility_calculator.calculate(
+            robot_position=robot_pos,
+            exploration_direction=robot.state.exploration_direction,
+            frontier_position=frontier_pos,
+            frontier_size=frontier['size']
+        )
 
     def assign_global_goals(self, robots, frontiers, step, world_to_grid_fn, plan_path_fn):
         """
         Assign goals to robots using market-based coordination (Global Best-First).
 
         Args:
-            robots: List of robot objects
+            robots: List of RobotContainer objects
             frontiers: List of frontier dicts from frontier detection
             step: Current simulation step
             world_to_grid_fn: Function to convert world coords to grid coords
@@ -89,92 +87,62 @@ class CoordinationController:
         if not frontiers:
             return
 
-        active_robots = robots
-        for robot in active_robots:
+        # 1. Set all robots to exploration mode
+        for robot in robots:
             robot.state.mode = 'GLOBAL_RELOCATE'
-            robot.state.cleanup_blacklist(step)
 
-        current_round_goals = []
-        unassigned_robots = active_robots.copy()
+        # 2. Extract robot states and positions for allocator
+        robot_states = [robot.state for robot in robots]
+        robot_positions = []
+        for robot in robots:
+            pos, _ = p.getBasePositionAndOrientation(robot.state.id)
+            robot_positions.append(np.array([pos[0], pos[1]]))
 
-        while unassigned_robots:
-            best_global_utility = -float('inf')
-            best_pair = None
+        # 3. Use TaskAllocator to get assignments
+        assignments = self.task_allocator.allocate_tasks(
+            robot_states=robot_states,
+            robot_positions=robot_positions,
+            frontiers=frontiers,
+            current_step=step
+        )
 
-            for robot in unassigned_robots:
-                current_goal_pos = None
-                if robot.state.goal:
-                    current_goal_pos = np.array(robot.state.goal)
+        # 4. Apply assignments to robots
+        for robot in robots:
+            robot_id = robot.state.id
 
-                for f in frontiers:
-                    if f['grid_pos'] in robot.state.blacklisted_goals:
-                        continue
+            if robot_id in assignments:
+                # Robot was assigned a frontier
+                assignment = assignments[robot_id]
+                frontier = assignment['frontier']
+                should_replan = assignment['should_replan']
+                utility = assignment['utility']
 
-                    target_pos = np.array(f['pos'])
-                    util, _ = self.calculate_utility(robot, f)
+                # Update goal
+                robot.state.goal = frontier['pos']
 
-                    # Calculate crowding penalty
-                    crowding_penalty = 0.0
-                    for assigned_goal in current_round_goals:
-                        dist_to_assigned = np.linalg.norm(target_pos - np.array(assigned_goal))
-                        if dist_to_assigned < self.crowding_radius:
-                            factor = 1.0 - (dist_to_assigned / self.crowding_radius)
-                            crowding_penalty += factor * self.crowding_penalty_weight
-
-                    # Persistence bias - prefer to keep current goal
-                    persistence_bias = 5.0
-                    if current_goal_pos is not None:
-                        dist_to_current = np.linalg.norm(target_pos - current_goal_pos)
-                        if dist_to_current < 2.0:
-                            util += persistence_bias
-
-                    final_utility = util - crowding_penalty
-
-                    if final_utility > best_global_utility:
-                        best_global_utility = final_utility
-                        best_pair = (robot, f)
-
-            if best_pair:
-                winner_robot, winning_frontier = best_pair
-                target_pos = winning_frontier['pos']
-
-                old_goal = winner_robot.state.goal
-                winner_robot.state.goal = target_pos
-
-                should_replan = True
-                if old_goal is not None:
-                    dist_change = np.linalg.norm(np.array(target_pos) - np.array(old_goal))
-                    if dist_change < 2.0:
-                        should_replan = False
-
+                # Plan path if needed
                 if should_replan:
-                    winner_robot.stuck_detector.reset(winner_robot.state, winner_robot.hardware)
-                    winner_robot.state.goal_attempts = 0
+                    robot.stuck_detector.reset(robot.state, robot.hardware)
+                    robot.state.goal_attempts = 0
 
-                    pos, _ = p.getBasePositionAndOrientation(winner_robot.state.id)
+                    # Get current position and plan path
+                    pos, _ = p.getBasePositionAndOrientation(robot.state.id)
                     start_grid = world_to_grid_fn(pos[0], pos[1])
-                    path = plan_path_fn(start_grid, winning_frontier['grid_pos'])
+                    path = plan_path_fn(start_grid, frontier['grid_pos'])
 
                     if path:
-                        winner_robot.state.path = path
-                        print(f"Robot {winner_robot.state.id}: Assigned goal (Utility: {best_global_utility:.1f})")
+                        robot.state.path = path
+                        print(f"Robot {robot_id}: Assigned goal (Utility: {utility:.1f})")
                     else:
-                        winner_robot.state.goal = None
-                        winner_robot.state.blacklisted_goals[winning_frontier['grid_pos']] = step + 500
-                        print(f"Robot {winner_robot.state.id}: Path failed to {winning_frontier['grid_pos']}, blacklisted.")
-
-                if winner_robot.state.goal is not None:
-                    current_round_goals.append(target_pos)
-                    unassigned_robots.remove(winner_robot)
-
+                        # Path planning failed - blacklist this frontier
+                        robot.state.goal = None
+                        robot.state.blacklisted_goals[frontier['grid_pos']] = step + 500
+                        print(f"Robot {robot_id}: Path failed to {frontier['grid_pos']}, blacklisted.")
             else:
-                break
-
-        # Clear goals for unassigned robots
-        for loser_robot in unassigned_robots:
-            if loser_robot.state.goal is not None:
-                loser_robot.state.goal = None
-                loser_robot.state.path = []
+                # Robot was not assigned - clear goal
+                if robot.state.goal is not None:
+                    robot.state.goal = None
+                    robot.state.path = []
 
     def plan_return_path(self, robot, world_to_grid_fn, plan_path_fn):
         """
