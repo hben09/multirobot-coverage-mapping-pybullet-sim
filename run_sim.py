@@ -1,12 +1,11 @@
 import pybullet as p
 import time
 from collections import defaultdict
-from environment import MapGenerator, PybulletRenderer
 from sim_logger import SimulationLogger
-from robot import Robot
 from pathfinding import NumbaAStarHelper
 from occupancy_grid_manager import OccupancyGridManager
 from coordination_controller import CoordinationController
+from simulation_initializer import SimulationInitializer
 from sim_config import get_simulation_config, print_config
 import sim_config as cfg
 from realtime_visualizer import RealtimeVisualizer
@@ -18,41 +17,22 @@ class CoverageMapper:
         self.num_robots = num_robots
         self.show_partitions = show_partitions  # Flag for rectangular decomposition
 
-        # Generate the maze grid first
-        map_generator = MapGenerator(
+        # Initialize environment and robots using the initializer
+        initializer = SimulationInitializer(
+            use_gui=use_gui,
             maze_size=maze_size,
-            seed=env_seed
-        )
-        maze_grid, entrance_cell = map_generator.generate_maze(env_type=env_type)
-
-        # Create PyBullet environment from the grid
-        self.env = PybulletRenderer(
-            maze_grid=maze_grid,
-            entrance_cell=entrance_cell,
             cell_size=cell_size,
-            wall_height=2.5,
-            gui=use_gui
+            env_seed=env_seed,
+            env_type=env_type,
+            num_robots=num_robots,
+            show_partitions=show_partitions
         )
 
-        self.env.build_walls()
-        self.physics_client = self.env.physics_client
+        # Setup environment
+        self.env, self.physics_client, self.map_bounds = initializer.initialize_environment()
 
-        self.robots = []
-        self.create_robots()
-
-        # Calculate map bounds
-        block_physical_size = self.env.cell_size / 2.0
-        half_block = block_physical_size / 2.0
-
-        maze_world_width = self.env.maze_grid.shape[1] * block_physical_size
-        maze_world_height = self.env.maze_grid.shape[0] * block_physical_size
-
-        self.map_bounds = {
-            'x_min': -half_block,
-            'x_max': maze_world_width - half_block,
-            'y_min': -half_block,
-            'y_max': maze_world_height - half_block
-        }
+        # Create robots
+        self.robots = initializer.create_robots(self.env)
 
         # Initialize occupancy grid manager
         self.grid_manager = OccupancyGridManager(self.map_bounds, grid_resolution, self.env)
@@ -85,63 +65,7 @@ class CoverageMapper:
         
         # Logging
         self.logger = None
-        self.env_config = {
-            'maze_size': maze_size,
-            'cell_size': cell_size,
-            'env_seed': env_seed,
-            'env_type': env_type,
-            'num_robots': num_robots,
-        }
-
-    def create_robots(self):
-        spawn_pos = self.env.get_spawn_position()
-        
-        all_colors = [
-            [1, 0, 0, 1],        # Red
-            [0, 1, 0, 1],        # Green
-            [0, 0, 1, 1],        # Blue
-            [1, 1, 0, 1],        # Yellow
-            [1, 0, 1, 1],        # Magenta
-            [0, 1, 1, 1],        # Cyan
-            [1, 0.5, 0, 1],      # Orange
-            [0.5, 0, 1, 1],      # Purple
-            [0.5, 0.5, 0.5, 1],  # Gray
-            [1, 0.75, 0.8, 1],   # Pink
-            [0, 0.5, 0, 1],      # Dark Green
-            [0.5, 0.25, 0, 1],   # Brown
-            [0, 0, 0.5, 1],      # Navy
-            [0.5, 1, 0, 1],      # Lime
-            [1, 0.5, 0.5, 1],    # Salmon
-            [0, 0.5, 0.5, 1],    # Teal
-        ]
-        
-        start_positions = []
-        spacing = cfg.ROBOT_SPACING
-        for i in range(self.num_robots):
-            offset = (i - (self.num_robots - 1) / 2) * spacing
-            start_positions.append([spawn_pos[0] + offset, spawn_pos[1], cfg.ROBOT_HEIGHT])
-
-        colors = [all_colors[i % len(all_colors)] for i in range(self.num_robots)]
-
-        for i, (pos, color) in enumerate(zip(start_positions, colors)):
-            collision_shape = p.createCollisionShape(p.GEOM_SPHERE, radius=cfg.ROBOT_RADIUS)
-            visual_shape = p.createVisualShape(p.GEOM_SPHERE, radius=cfg.ROBOT_RADIUS, rgbaColor=color)
-
-            robot_id = p.createMultiBody(
-                baseMass=cfg.ROBOT_MASS,
-                baseCollisionShapeIndex=collision_shape,
-                baseVisualShapeIndex=visual_shape,
-                basePosition=pos
-            )
-
-            p.changeDynamics(robot_id, -1, localInertiaDiagonal=[0, 0, 1])
-            p.changeDynamics(robot_id, -1,
-                           lateralFriction=cfg.LATERAL_FRICTION,
-                           spinningFriction=cfg.SPINNING_FRICTION,
-                           rollingFriction=cfg.ROLLING_FRICTION)
-
-            robot = Robot(robot_id, pos, color)
-            self.robots.append(robot)
+        self.env_config = initializer.get_env_config()
 
     def world_to_grid(self, x, y):
         return self.grid_manager.world_to_grid(x, y)

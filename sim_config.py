@@ -18,7 +18,7 @@ CELL_SIZE = 10.0
 ENV_SEED = None
 
 # Environment type: 'maze', 'blank_box', 'cave', 'tunnel', 'rooms', 'sewer', 'corridor_rooms'
-ENV_TYPE = 'sewer'
+ENV_TYPE = 'corridor_rooms'
 
 # Show PyBullet 3D window (True/False)
 USE_GUI = False
@@ -28,7 +28,7 @@ USE_GUI = False
 SHOW_PARTITIONS = False
 
 # Number of robots (1-16)
-NUM_ROBOTS = 3
+NUM_ROBOTS = 4
 
 # Maximum simulation steps (None for unlimited)
 MAX_STEPS = None
