@@ -10,6 +10,7 @@ from sim_logger import SimulationLogger
 from robot import Robot
 from pathfinding import NumbaAStarHelper
 from numba_occupancy import NumbaOccupancyGrid
+from sim_config import get_simulation_config, print_config
 
 
 
@@ -1023,102 +1024,31 @@ class CoverageMapper:
 
 
 def main():
-    print("=" * 60)
-    print("Multi-Robot Coverage Mapping")
-    print("=" * 60)
+    # Get configuration from user prompts
+    config = get_simulation_config()
 
-    maze_size_input = input("\nEnter maze size (e.g., '10' for 10x10, default=10): ").strip()
-    maze_size = int(maze_size_input) if maze_size_input.isdigit() else 10
+    # Print configuration summary
+    print_config(config)
 
-    cell_size_input = input("Enter cell size in meters (default=10.0): ").strip()
-    try:
-        cell_size = float(cell_size_input)
-    except:
-        cell_size = 10.0
-
-    seed_input = input("Enter random seed (press Enter for random): ").strip()
-    env_seed = int(seed_input) if seed_input.isdigit() else None
-
-    print("\nEnvironment types:")
-    print("  1. Maze (complex maze with walls)")
-    print("  2. Blank box (empty room with single wall in middle)")
-    print("  3. Cave (organic cellular automata)")
-    print("  4. Tunnel (long winding corridor)")
-    print("  5. Rooms (dungeon with connected chambers)")
-    print("  6. Sewer (grid of interconnected pipes)")
-    print("  7. Corridor Rooms (Central hall with attached rooms)")
-    env_type_input = input("Choose environment type (1-7, default=1): ").strip()
-
-    if env_type_input == '2':
-        env_type = 'blank_box'
-    elif env_type_input == '3':
-        env_type = 'cave'
-    elif env_type_input == '4':
-        env_type = 'tunnel'
-    elif env_type_input == '5':
-        env_type = 'rooms'
-    elif env_type_input == '6':
-        env_type = 'sewer'
-    elif env_type_input == '7':
-        env_type = 'corridor_rooms'
-    else:
-        env_type = 'maze'
-
-    gui_input = input("Show PyBullet 3D window? (y/n, default=n): ").strip().lower()
-    use_gui = gui_input == 'y'
-
-    # NEW: Toggle for partition visualization
-    part_input = input("Show Rectangular Decomposition visualization? (y/n, default=n): ").strip().lower()
-    show_partitions = part_input == 'y'
-
-    num_robots_input = input("Number of robots (1-16, default=3): ").strip()
-    if num_robots_input.isdigit():
-        num_robots = max(1, min(16, int(num_robots_input)))
-    else:
-        num_robots = 3
-
-    steps_input = input("Number of simulation steps (press Enter for unlimited): ").strip()
-    if steps_input.isdigit():
-        max_steps = int(steps_input)
-    else:
-        max_steps = None
-
-    print("\nVisualization modes:")
-    print("  1. realtime - Live matplotlib window (default)")
-    print("  2. logging  - Log to file for offline playback (faster)")
-    print("  3. both     - Live visualization AND logging")
-    print("  4. none     - No visualization (fastest)")
-    viz_mode_input = input("Choose visualization mode (1-4, default=1): ").strip()
-    
-    if viz_mode_input == '2':
-        viz_mode = 'logging'
-    elif viz_mode_input == '3':
-        viz_mode = 'both'
-    elif viz_mode_input == '4':
-        viz_mode = 'none'
-    else:
-        viz_mode = 'realtime'
-
-    print(f"\nCreating {maze_size}x{maze_size} {env_type} with {cell_size}m cells and {num_robots} robots...")
-
+    # Create mapper with configuration
     mapper = CoverageMapper(
-        use_gui=use_gui,
-        maze_size=(maze_size, maze_size),
-        cell_size=cell_size,
-        env_seed=env_seed,
-        env_type=env_type,
-        num_robots=num_robots,
-        show_partitions=show_partitions
+        use_gui=config['use_gui'],
+        maze_size=(config['maze_size'], config['maze_size']),
+        cell_size=config['cell_size'],
+        env_seed=config['env_seed'],
+        env_type=config['env_type'],
+        num_robots=config['num_robots'],
+        show_partitions=config['show_partitions']
     )
 
     log_filepath = None
 
     try:
         log_filepath = mapper.run_simulation(
-            steps=max_steps,
+            steps=config['max_steps'],
             scan_interval=10,
-            use_gui=use_gui,
-            viz_mode=viz_mode,
+            use_gui=config['use_gui'],
+            viz_mode=config['viz_mode'],
             viz_update_interval=50,
             log_path='./logs'
         )
@@ -1136,17 +1066,16 @@ def main():
         mapper.cleanup()
         print("PyBullet disconnected")
 
-    if log_filepath is not None:
-        render_input = input("\nRender video from log? (y/n, default=n): ").strip().lower()
-        if render_input == 'y':
-            try:
-                from video_renderer import render_video_from_log
-                print("\nRendering video with OpenCV (fast parallel renderer)...")
-                render_video_from_log(log_filepath)
-            except ImportError:
-                print("Warning: video_renderer_opencv.py not found, skipping video rendering")
-            except Exception as e:
-                print(f"Error rendering video: {e}")
+    # Handle video rendering
+    if log_filepath is not None and config['render_video']:
+        try:
+            from video_renderer import render_video_from_log
+            print("\nRendering video with OpenCV (fast parallel renderer)...")
+            render_video_from_log(log_filepath)
+        except ImportError:
+            print("Warning: video_renderer.py not found, skipping video rendering")
+        except Exception as e:
+            print(f"Error rendering video: {e}")
 
 
 if __name__ == "__main__":
