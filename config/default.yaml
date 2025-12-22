@@ -1,0 +1,45 @@
+environment:
+  maze_size: 10
+  cell_size: 10.0
+  type: "corridor_rooms"  # options: maze, blank_box, cave, tunnel, rooms, sewer, corridor_rooms
+  seed: null              # null for random, or integer
+  safety_margin: 1        # Grid cells to inflate obstacles
+
+robots:
+  count: 4
+  spacing: 1.5            # Spacing between robots at spawn
+  radius: 0.25
+  mass: 1.0
+  spawn_height: 0.25
+
+sensors:
+  lidar:
+    num_rays: 90
+    max_range: 15.0
+
+physics:
+  lateral_friction: 1.0
+  spinning_friction: 0.1
+  rolling_friction: 0.0
+
+planning:
+  grid_resolution: 0.5
+  return_home_coverage: 100.0
+  utility_weights:
+    direction_bias: 2.5
+    size: 0.3
+    distance: 1.0
+  coordination:
+    crowding_penalty: 100.0
+    crowding_radius: 8.0
+
+system:
+  use_gui: false
+  viz_mode: "logging"     # options: realtime, logging, both, none
+  render_video: true
+  show_partitions: false
+  max_steps: null         # null for unlimited
+  intervals:
+    scan: 10
+    viz_update: 50
+    performance_report: 3.0
