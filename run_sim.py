@@ -138,10 +138,10 @@ class SimulationManager:
         if action == 'FOLLOW_PATH':
             l, a = robot.path_follower.compute_velocities(
                 robot.state,
-                robot.hardware,
+                robot.driver,
                 self.grid_to_world
             )
-            robot.hardware.set_velocity(l, a)
+            robot.driver.set_velocity(l, a)
 
     def plan_return_path_for_robot(self, robot):
         """Plan a path home for a single robot using A*."""
@@ -262,12 +262,12 @@ class SimulationManager:
             if step % intervals['scan'] == 0:
                 for robot in robots:
                     # Perform LIDAR scan and update state
-                    scan_points = robot.hardware.get_lidar_scan(
-                        num_rays=lidar_cfg['num_rays'], 
+                    scan_points = robot.driver.get_lidar_scan(
+                        num_rays=lidar_cfg['num_rays'],
                         max_range=lidar_cfg['max_range']
                     )
                     robot.state.lidar_data = scan_points
-                    pos_array, _ = robot.hardware.get_pose()
+                    pos_array, _ = robot.driver.get_pose()
                     robot.state.trajectory.append((pos_array[0], pos_array[1]))
                     robot.state.trim_trajectory_if_needed()
                     robot.direction_tracker.update(robot.state)

@@ -1,7 +1,8 @@
 """Robot module containing robot state and hardware interfaces."""
 
 from .robot_state import RobotState
-from .robot_hardware import RobotHardware
+from .robot_driver import RobotDriver
+from .pybullet_driver import PyBulletDriver
 
 
 class RobotContainer:
@@ -10,12 +11,17 @@ class RobotContainer:
 
     This is a simple namespace that groups related components:
     - state: RobotState (pure data)
-    - hardware: RobotHardware (PyBullet interface)
+    - driver: RobotDriver (hardware abstraction layer)
     - stuck_detector: StuckDetector (behavior)
     - path_follower: PathFollower (behavior)
     - direction_tracker: ExplorationDirectionTracker (behavior)
 
-    Unlike the old Robot class, this doesn't provide convenience methods.
+    The driver field is a RobotDriver interface, which can be:
+    - PyBulletDriver for simulation
+    - A real robot driver for physical hardware
+    - A mock driver for testing
+
+    This separation enables hardware independence and clean architecture.
     Users should access components directly (e.g., robot.state.position).
     """
 
@@ -35,7 +41,7 @@ class RobotContainer:
 
         # Core components
         self.state = RobotState(id=robot_id, position=position, color=color)
-        self.hardware = RobotHardware(pybullet_id=robot_id)
+        self.driver = PyBulletDriver(pybullet_id=robot_id)
 
         # Behavior components
         self.stuck_detector = StuckDetector(threshold=0.3, stuck_limit=200)
@@ -53,4 +59,4 @@ class RobotContainer:
         )
 
 
-__all__ = ['RobotState', 'RobotHardware', 'RobotContainer']
+__all__ = ['RobotState', 'RobotDriver', 'PyBulletDriver', 'RobotContainer']
