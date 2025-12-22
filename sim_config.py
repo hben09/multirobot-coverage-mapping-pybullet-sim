@@ -18,7 +18,7 @@ CELL_SIZE = 10.0
 ENV_SEED = None
 
 # Environment type: 'maze', 'blank_box', 'cave', 'tunnel', 'rooms', 'sewer', 'corridor_rooms'
-ENV_TYPE = 'corridor_rooms'
+ENV_TYPE = 'sewer'
 
 # Show PyBullet 3D window (True/False)
 USE_GUI = False
@@ -34,10 +34,10 @@ NUM_ROBOTS = 3
 MAX_STEPS = None
 
 # Visualization mode: 'realtime', 'logging', 'both', 'none'
-VIZ_MODE = 'realtime'
+VIZ_MODE = 'logging'
 
 # Automatically render video after simulation (True/False)
-RENDER_VIDEO = False
+RENDER_VIDEO = True
 
 # ============================================================
 # ALGORITHM PARAMETERS
