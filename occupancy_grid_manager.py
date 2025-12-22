@@ -1,7 +1,7 @@
 """
 OccupancyGridManager - Manages occupancy grid, frontier detection, and coordinate transformations.
 
-This class extracts all grid-related functionality from CoverageMapper to improve
+This class extracts all grid-related functionality from SimulationManager to improve
 separation of concerns and maintainability.
 """
 

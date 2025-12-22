@@ -10,8 +10,8 @@ from sim_config import get_simulation_config, print_config
 import sim_config as cfg
 from realtime_visualizer import RealtimeVisualizer
 
-class CoverageMapper:
-    """Multi-robot coverage mapper for procedurally generated environments"""
+class SimulationManager:
+    """Manages multi-robot coverage mapping simulation for procedurally generated environments"""
 
     def __init__(self, use_gui=True, maze_size=(10, 10), cell_size=2.0, env_seed=None, env_type='maze', num_robots=3, show_partitions=False, grid_resolution=0.5):
         self.num_robots = num_robots
@@ -330,7 +330,7 @@ def main():
     print_config(user_config)
 
     # Create mapper with configuration
-    mapper = CoverageMapper(
+    mapper = SimulationManager(
         use_gui=user_config['use_gui'],
         maze_size=(user_config['maze_size'], user_config['maze_size']),
         cell_size=user_config['cell_size'],

@@ -22,10 +22,10 @@ class RealtimeVisualizer:
 
     def __init__(self, mapper):
         """
-        Initialize visualizer with reference to CoverageMapper.
+        Initialize visualizer with reference to SimulationManager.
 
         Args:
-            mapper: CoverageMapper instance to visualize
+            mapper: SimulationManager instance to visualize
         """
         self.mapper = mapper
         self.fig = None
