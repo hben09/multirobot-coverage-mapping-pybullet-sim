@@ -2,32 +2,33 @@
 Simulation Initialization Module
 
 Handles environment setup, map generation, and robot creation for the coverage mapping simulation.
-Refactored to use dictionary-based configuration.
+Uses type-safe dataclass configuration.
 """
 
 import pybullet as p
 from simulation.level_generator import MapGenerator
 from simulation.physics_engine import PybulletRenderer
 from robot import RobotContainer
+from utils.config_schema import EnvironmentConfig, RobotConfig, PhysicsConfig, LidarConfig
 
 class SimulationInitializer:
     """Handles all initialization logic for the coverage mapping simulation."""
 
-    def __init__(self, env_config):
+    def __init__(self, env_config: EnvironmentConfig):
         """
-        Initialize simulation parameters from configuration dict.
+        Initialize simulation parameters from typed configuration object.
 
         Args:
-            env_config (dict): 'environment' section of config.yaml
+            env_config: Environment configuration with type-safe access.
         """
         self.config = env_config
-        
+
         self.use_gui = False # This is handled by the renderer, but good to track
-        self.maze_size = (self.config['maze_size'], self.config['maze_size'])
-        self.cell_size = self.config['cell_size']
-        self.env_seed = self.config['seed']
-        self.env_type = self.config['type']
-        
+        self.maze_size = (self.config.maze_size, self.config.maze_size)
+        self.cell_size = self.config.cell_size
+        self.env_seed = self.config.seed
+        self.env_type = self.config.type
+
         # Note: num_robots is now passed to create_robots directly or handled by manager
         # We store it here if needed for metadata
         self.num_robots = 0 
@@ -79,21 +80,21 @@ class SimulationInitializer:
 
         return env, physics_client, map_bounds
 
-    def create_robots(self, env, robot_config, physics_config, lidar_config=None):
+    def create_robots(self, env, robot_config: RobotConfig, physics_config: PhysicsConfig, lidar_config: LidarConfig = None):
         """
         Create and configure robots at spawn position.
 
         Args:
             env: PybulletRenderer instance
-            robot_config (dict): 'robots' section of config
-            physics_config (dict): 'physics' section of config
-            lidar_config (dict): Optional LIDAR config with 'num_rays' and 'max_range'
+            robot_config: Robot configuration object
+            physics_config: Physics configuration object
+            lidar_config: Optional LIDAR configuration object
 
         Returns:
             list: List of RobotContainer instances
         """
         spawn_pos = env.get_spawn_position()
-        self.num_robots = robot_config['count']
+        self.num_robots = robot_config.count
 
         all_colors = [
             [1, 0, 0, 1],        # Red
@@ -116,9 +117,9 @@ class SimulationInitializer:
 
         # Calculate start positions with spacing
         start_positions = []
-        spacing = robot_config['spacing']
-        spawn_height = robot_config['spawn_height']
-        
+        spacing = robot_config.spacing
+        spawn_height = robot_config.spawn_height
+
         for i in range(self.num_robots):
             offset = (i - (self.num_robots - 1) / 2) * spacing
             start_positions.append([spawn_pos[0] + offset, spawn_pos[1], spawn_height])
@@ -126,8 +127,8 @@ class SimulationInitializer:
         colors = [all_colors[i % len(all_colors)] for i in range(self.num_robots)]
 
         robots = []
-        radius = robot_config['radius']
-        mass = robot_config['mass']
+        radius = robot_config.radius
+        mass = robot_config.mass
         
         for i, (pos, color) in enumerate(zip(start_positions, colors)):
             collision_shape = p.createCollisionShape(p.GEOM_SPHERE, radius=radius)
@@ -143,9 +144,9 @@ class SimulationInitializer:
             # Configure physics properties
             p.changeDynamics(robot_id, -1, localInertiaDiagonal=[0, 0, 1])
             p.changeDynamics(robot_id, -1,
-                           lateralFriction=physics_config['lateral_friction'],
-                           spinningFriction=physics_config['spinning_friction'],
-                           rollingFriction=physics_config['rolling_friction'])
+                           lateralFriction=physics_config.lateral_friction,
+                           spinningFriction=physics_config.spinning_friction,
+                           rollingFriction=physics_config.rolling_friction)
 
             robot = RobotContainer(robot_id, pos, color, lidar_config=lidar_config)
             robots.append(robot)
@@ -157,14 +158,17 @@ class SimulationInitializer:
         Get environment configuration dictionary for logging.
 
         Returns:
-            dict: Environment configuration parameters
+            dict: Environment configuration parameters (for backward compatibility with logger)
         """
-        # Return a copy of the config augmented with num_robots for the logger
-        conf = self.config.copy()
-        conf['num_robots'] = self.num_robots
-        
-        # FIX: Backward compatibility for video_renderer/playback which expect 'env_type'
-        if 'type' in conf:
-            conf['env_type'] = conf['type']
-            
+        # Convert dataclass to dict and augment with num_robots for the logger
+        conf = {
+            'maze_size': self.config.maze_size,
+            'cell_size': self.config.cell_size,
+            'type': self.config.type,
+            'seed': self.config.seed,
+            'safety_margin': self.config.safety_margin,
+            'num_robots': self.num_robots,
+            'env_type': self.config.type  # Backward compatibility for video_renderer/playback
+        }
+
         return conf

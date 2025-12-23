@@ -8,44 +8,45 @@ from mapping.grid_manager import OccupancyGridManager
 from coordination.controller import CoordinationController
 from simulation.initializer import SimulationInitializer
 from visualization.realtime import RealtimeVisualizer
+from utils.config_schema import SimulationConfig
 
 
 class SimulationManager:
     """Manages multi-robot coverage mapping simulation."""
 
-    def __init__(self, config):
+    def __init__(self, config: SimulationConfig):
         """
-        Initialize the simulation manager with a configuration dictionary.
+        Initialize the simulation manager with a typed configuration object.
 
         Args:
-            config (dict): Complete configuration loaded from YAML.
+            config: Type-safe configuration object with all simulation parameters.
         """
         self.config = config
-        self.env_cfg = config['environment']
-        self.robot_cfg = config['robots']
-        self.sys_cfg = config['system']
-        self.plan_cfg = config['planning']
+        self.env_cfg = config.environment
+        self.robot_cfg = config.robots
+        self.sys_cfg = config.system
+        self.plan_cfg = config.planning
 
-        self.show_partitions = self.sys_cfg['show_partitions']
+        self.show_partitions = self.sys_cfg.show_partitions
 
         # Initialize environment and robots using the initializer
         initializer = SimulationInitializer(self.env_cfg)
 
         # Setup environment
         self.env, self.physics_client, self.map_bounds = initializer.initialize_environment(
-            use_gui=self.sys_cfg['use_gui']
+            use_gui=self.sys_cfg.use_gui
         )
 
         # Create robots
         self.robots = initializer.create_robots(
             self.env,
             self.robot_cfg,
-            self.config['physics'],
-            lidar_config=self.config['sensors']['lidar']
+            self.config.physics,
+            lidar_config=self.config.sensors.lidar
         )
 
         # Safety margin (needed before grid initialization)
-        self.safety_margin = self.env_cfg['safety_margin']
+        self.safety_margin = self.env_cfg.safety_margin
 
         # Numba A* helper (needed before grid initialization)
         self._numba_astar = NumbaAStarHelper()
@@ -53,20 +54,20 @@ class SimulationManager:
         # Initialize occupancy grid manager
         self.grid_manager = OccupancyGridManager(
             self.map_bounds,
-            self.plan_cfg['grid_resolution'],
+            self.plan_cfg.grid_resolution,
             self.env
         )
 
         # Initialize coordination controller
-        coord_cfg = self.plan_cfg['coordination']
-        util_weights = self.plan_cfg['utility_weights']
+        coord_cfg = self.plan_cfg.coordination
+        util_weights = self.plan_cfg.utility_weights
 
         self.coordinator = CoordinationController(
-            direction_bias_weight=util_weights['direction_bias'],
-            size_weight=util_weights['size'],
-            distance_weight=util_weights['distance'],
-            crowding_penalty_weight=coord_cfg['crowding_penalty'],
-            crowding_radius=coord_cfg['crowding_radius']
+            direction_bias_weight=util_weights.direction_bias,
+            size_weight=util_weights.size,
+            distance_weight=util_weights.distance,
+            crowding_penalty_weight=coord_cfg.crowding_penalty,
+            crowding_radius=coord_cfg.crowding_radius
         )
 
         # Inject planning dependencies into robot agents
@@ -86,7 +87,7 @@ class SimulationManager:
         self.visualizer = RealtimeVisualizer(self)
 
         # Return-to-home settings
-        self.return_home_coverage = self.plan_cfg['return_home_coverage']
+        self.return_home_coverage = self.plan_cfg.return_home_coverage
         self.returning_home = False
         self.robots_home = set()
 
@@ -163,9 +164,9 @@ class SimulationManager:
         print("Starting multi-robot coverage mapping simulation...")
 
         # Pull parameters from config
-        max_steps = self.sys_cfg['max_steps']
-        intervals = self.sys_cfg['intervals']
-        viz_mode = self.sys_cfg['viz_mode']
+        max_steps = self.sys_cfg.max_steps
+        intervals = self.sys_cfg.intervals
+        viz_mode = self.sys_cfg.viz_mode
 
         if max_steps is None:
             print("Running unlimited steps (press Ctrl+C to stop)...")
@@ -174,7 +175,7 @@ class SimulationManager:
 
         do_realtime = viz_mode in ['realtime', 'both']
         do_logging = viz_mode in ['logging', 'both']
-        use_gui = self.sys_cfg['use_gui']
+        use_gui = self.sys_cfg.use_gui
 
         fast_mode = viz_mode == 'logging' and not use_gui
         if fast_mode:
@@ -239,7 +240,7 @@ class SimulationManager:
 
             # Agent update cycle with optional sensing
             t0 = time.perf_counter()
-            should_sense = (step % intervals['scan'] == 0)
+            should_sense = (step % intervals.scan == 0)
 
             for robot in robots:
                 # Agent handles sense-think-act autonomously
@@ -268,7 +269,7 @@ class SimulationManager:
             perf_stats['sensing'] += time.perf_counter() - t0
 
             t0 = time.perf_counter()
-            if step % intervals['viz_update'] == 0:
+            if step % intervals.viz_update == 0:
                 if do_realtime:
                     self.visualizer.update(step)
                 if do_logging:
@@ -285,7 +286,7 @@ class SimulationManager:
             current_time = time.perf_counter()
             elapsed_since_report = current_time - last_report_time
 
-            if elapsed_since_report >= intervals['performance_report']:
+            if elapsed_since_report >= intervals.performance_report:
                 steps_done = step - last_report_step
                 sps = steps_done / elapsed_since_report if elapsed_since_report > 0 else 0
                 coverage = self.calculate_coverage()

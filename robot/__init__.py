@@ -36,16 +36,17 @@ class RobotContainer:
             robot_id: PyBullet body ID
             position: Initial position (x, y, z)
             color: RGB color tuple
-            lidar_config: Optional dict with 'num_rays' and 'max_range'
+            lidar_config: Optional LidarConfig dataclass or dict with 'num_rays' and 'max_range'
         """
         # Lazy import to avoid circular dependencies
         from behaviors.stuck_detector import StuckDetector
         from behaviors.path_follower import PathFollower
         from behaviors.exploration_direction_tracker import ExplorationDirectionTracker
+        from utils.config_schema import LidarConfig
 
         # Default LIDAR config
         if lidar_config is None:
-            lidar_config = {'num_rays': 360, 'max_range': 10.0}
+            lidar_config = LidarConfig(num_rays=360, max_range=10.0)
 
         # Core components
         self.state = RobotState(id=robot_id, position=position, color=color)
@@ -67,14 +68,22 @@ class RobotContainer:
         )
 
         # Agent: The autonomous control node
+        # Handle both dataclass and dict for backward compatibility
+        if isinstance(lidar_config, LidarConfig):
+            num_rays = lidar_config.num_rays
+            max_range = lidar_config.max_range
+        else:
+            num_rays = lidar_config['num_rays']
+            max_range = lidar_config['max_range']
+
         self.agent = RobotAgent(
             state=self.state,
             driver=self.driver,
             stuck_detector=self.stuck_detector,
             path_follower=self.path_follower,
             direction_tracker=self.direction_tracker,
-            lidar_num_rays=lidar_config['num_rays'],
-            lidar_max_range=lidar_config['max_range']
+            lidar_num_rays=num_rays,
+            lidar_max_range=max_range
         )
 
 

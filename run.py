@@ -12,10 +12,10 @@ def main():
         return
 
     # 2. Print summary
-    env = cfg['environment']
-    rob = cfg['robots']
-    print(f"\nCreating {env['maze_size']}x{env['maze_size']} {env['type']} "
-          f"with {rob['count']} robots...")
+    env = cfg.environment
+    rob = cfg.robots
+    print(f"\nCreating {env.maze_size}x{env.maze_size} {env.type} "
+          f"with {rob.count} robots...")
 
     # 3. Initialize Manager with full config
     mapper = SimulationManager(cfg)
@@ -39,7 +39,7 @@ def main():
         print("PyBullet disconnected")
 
     # Handle video rendering
-    if log_filepath is not None and cfg['system']['render_video']:
+    if log_filepath is not None and cfg.system.render_video:
         try:
             from visualization.renderer import render_video_from_log
             print("\nRendering video with OpenCV (fast parallel renderer)...")

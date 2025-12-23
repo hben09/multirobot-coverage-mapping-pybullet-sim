@@ -1,5 +1,5 @@
 environment:
-  maze_size: 14
+  maze_size: 12
   cell_size: 10.0
   type: "sewer"  # options: maze, blank_box, cave, tunnel, rooms, sewer, corridor_rooms
   seed: null              # null for random, or integer
