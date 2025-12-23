@@ -7,7 +7,7 @@ separation of concerns and maintainability.
 
 import numpy as np
 from collections import deque
-from mapping.numba_accelerator import NumbaOccupancyGrid
+from mapping.numba_accelerator import NumbaOccupancyGrid, detect_frontiers_numpy
 
 
 class OccupancyGridManager:
@@ -29,12 +29,6 @@ class OccupancyGridManager:
         # Numba-accelerated occupancy grid (SINGLE SOURCE OF TRUTH)
         self._numba_occupancy = NumbaOccupancyGrid(map_bounds, grid_resolution)
 
-        # DEPRECATED: Legacy dict/set kept temporarily for compatibility
-        # TODO: Remove these once all code uses Numpy grid directly
-        self.occupancy_grid = {}  # 1=Free, 2=Obstacle
-        self.explored_cells = set()
-        self.obstacle_cells = set()
-
         # Pre-compute maze lookup for coverage calculation
         block_physical_size = self.env.cell_size / 2.0
         self._maze_block_size = block_physical_size
@@ -42,23 +36,97 @@ class OccupancyGridManager:
         self._maze_inv_block_size = 1.0 / block_physical_size
 
         # Calculate total free cells for coverage
+        # Use EXACT count instead of approximation to avoid 97% ceiling
+        # Old approximation: ground_truth_zeros * (scale_factor ** 2)
+        block_physical_size = self.env.cell_size / 2.0
         scale_factor = block_physical_size / grid_resolution
         ground_truth_zeros = np.sum(self.env.maze_grid == 0)
-        self.total_free_cells = ground_truth_zeros * (scale_factor ** 2)
+        approx_free_cells = ground_truth_zeros * (scale_factor ** 2)
 
-        # Pre-computed grid bounds for frontier detection
-        self._grid_bounds = None
+        self.total_free_cells = self._calculate_exact_free_cell_count()
 
-        # INCREMENTAL FRONTIER DETECTION
-        self._frontier_candidates = set()
+        print(f"Coverage calculation:")
+        print(f"  Approximate free cells: {approx_free_cells:.1f}")
+        print(f"  Exact free cells: {self.total_free_cells}")
+        print(f"  Difference: {abs(self.total_free_cells - approx_free_cells):.1f} cells ({abs(self.total_free_cells - approx_free_cells) / approx_free_cells * 100:.1f}%)")
+
+        # FRONTIER DETECTION
         self._cached_frontiers = None
 
-        # INCREMENTAL COVERAGE TRACKING
+        # INCREMENTAL COVERAGE TRACKING (using Numpy grid snapshot)
+        self._last_coverage_grid = None
         self._incremental_valid_count = 0
-        self._processed_explored_cells = set()
         self._cached_coverage = 0.0
         self._coverage_cache_valid = False
-        self._coverage_explored_count = 0
+
+    def _calculate_exact_free_cell_count(self):
+        """
+        Calculate the EXACT number of grid cells that map to free maze cells.
+
+        This replaces the approximation (ground_truth_zeros * scale_factor^2)
+        with an exact count to avoid the 97% coverage ceiling.
+
+        Returns:
+            int: Exact count of grid cells mapping to free maze cells
+        """
+        # Get grid dimensions
+        height, width = self._numba_occupancy.grid.shape
+        offset_x = self._numba_occupancy.grid_offset_x
+        offset_y = self._numba_occupancy.grid_offset_y
+
+        # Generate all possible grid coordinates within map bounds
+        min_gx = int((self.map_bounds['x_min'] - self.map_bounds['x_min']) / self.grid_resolution) - offset_x
+        max_gx = int((self.map_bounds['x_max'] - self.map_bounds['x_min']) / self.grid_resolution) - offset_x
+        min_gy = int((self.map_bounds['y_min'] - self.map_bounds['y_min']) / self.grid_resolution) - offset_y
+        max_gy = int((self.map_bounds['y_max'] - self.map_bounds['y_min']) / self.grid_resolution) - offset_y
+
+        # Clamp to grid dimensions
+        min_gx = max(0, min_gx)
+        max_gx = min(width, max_gx)
+        min_gy = max(0, min_gy)
+        max_gy = min(height, max_gy)
+
+        # Create meshgrid of all cell indices
+        gy_range = np.arange(min_gy, max_gy)
+        gx_range = np.arange(min_gx, max_gx)
+        gx_grid, gy_grid = np.meshgrid(gx_range, gy_range)
+
+        # Flatten to 1D arrays
+        gx_flat = gx_grid.flatten()
+        gy_flat = gy_grid.flatten()
+
+        # Convert to absolute grid coordinates
+        abs_gx = gx_flat + offset_x
+        abs_gy = gy_flat + offset_y
+
+        # Convert to world coordinates
+        x_min = self.map_bounds['x_min']
+        y_min = self.map_bounds['y_min']
+        wx = x_min + (abs_gx + 0.5) * self.grid_resolution
+        wy = y_min + (abs_gy + 0.5) * self.grid_resolution
+
+        # Convert to maze coordinates
+        half_block = self._maze_half_block
+        inv_block_size = self._maze_inv_block_size
+        mx = ((wx + half_block) * inv_block_size).astype(int)
+        my = ((wy + half_block) * inv_block_size).astype(int)
+
+        # Check which cells map to free maze cells
+        maze_h, maze_w = self.env.maze_grid.shape
+        maze_grid = self.env.maze_grid
+
+        in_bounds = (mx >= 0) & (mx < maze_w) & (my >= 0) & (my < maze_h)
+        valid_idx = np.where(in_bounds)[0]
+
+        if len(valid_idx) == 0:
+            return 0
+
+        mx_valid = mx[valid_idx]
+        my_valid = my[valid_idx]
+        is_free = (maze_grid[my_valid, mx_valid] == 0)
+
+        total_free = np.sum(is_free)
+        return int(total_free)
 
     def get_numpy_grid(self):
         """
@@ -104,42 +172,24 @@ class OccupancyGridManager:
         if not lidar_data:
             return False
 
-        old_explored_count = len(self.explored_cells)
-
         # Update Numpy grid (single source of truth)
         num_rays, new_free_cells, new_obstacle_cells = self._numba_occupancy.update_from_lidar(
             robot_pos,
             lidar_data
         )
 
-        # Sync to legacy dicts/sets for backward compatibility
-        # TODO: Remove this once visualization code uses Numpy grid directly
-        for cell in new_free_cells:
-            self.occupancy_grid[cell] = 1
-            self.explored_cells.add(cell)
+        # Track if we explored new cells
+        has_new_cells = len(new_free_cells) > 0 or len(new_obstacle_cells) > 0
 
-        for cell in new_obstacle_cells:
-            self.occupancy_grid[cell] = 2
-            self.obstacle_cells.add(cell)
+        # Invalidate frontier cache if new cells were explored
+        if has_new_cells:
+            self.invalidate_frontier_cache()
 
-        # Track frontier candidates near newly explored areas
-        if len(self.explored_cells) > old_explored_count:
-            robot_cell = self.world_to_grid(robot_pos[0], robot_pos[1])
-            lidar_range_cells = int(15.0 / self.grid_resolution) + 1
-
-            for dx in range(-lidar_range_cells, lidar_range_cells + 1):
-                for dy in range(-lidar_range_cells, lidar_range_cells + 1):
-                    cell = (robot_cell[0] + dx, robot_cell[1] + dy)
-                    if cell in self.explored_cells:
-                        self._frontier_candidates.add(cell)
-
-            return True
-
-        return False
+        return has_new_cells
 
     def detect_frontiers(self, use_cache=False):
         """
-        Detect and cluster frontier cells - OPTIMIZED with candidate tracking.
+        Detect and cluster frontier cells using NUMPY-OPTIMIZED operations.
 
         Args:
             use_cache: If True, return cached frontiers if available
@@ -150,102 +200,24 @@ class OccupancyGridManager:
         if use_cache and self._cached_frontiers is not None and len(self._cached_frontiers) > 0:
             return self._cached_frontiers
 
-        # Initialize grid bounds on first call
-        if self._grid_bounds is None:
-            self._grid_bounds = {
-                'min_gx': int((self.map_bounds['x_min'] - self.map_bounds['x_min']) / self.grid_resolution),
-                'max_gx': int((self.map_bounds['x_max'] - self.map_bounds['x_min']) / self.grid_resolution),
-                'min_gy': int((self.map_bounds['y_min'] - self.map_bounds['y_min']) / self.grid_resolution),
-                'max_gy': int((self.map_bounds['y_max'] - self.map_bounds['y_min']) / self.grid_resolution),
-            }
+        # Use vectorized Numpy frontier detection (FAST PATH)
+        numpy_grid = self._numba_occupancy.grid
+        offset_x, offset_y = self._numba_occupancy.grid_offset_x, self._numba_occupancy.grid_offset_y
 
-        gb = self._grid_bounds
-        neighbor_offsets = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
-
-        # Use frontier candidates if available, otherwise check all explored cells
-        if self._frontier_candidates:
-            cells_to_check = self._frontier_candidates
-        else:
-            cells_to_check = self.explored_cells
-
-        frontiers = set()
-        occupancy = self.occupancy_grid
-        non_frontier_candidates = set()
-
-        # Find frontier cells (free cells adjacent to unknown cells)
-        for cell in cells_to_check:
-            if cell not in self.explored_cells:
-                non_frontier_candidates.add(cell)
-                continue
-            if occupancy.get(cell) != 1:
-                non_frontier_candidates.add(cell)
-                continue
-
-            x, y = cell
-            is_frontier = False
-            has_all_neighbors_known = True
-
-            for dx, dy in neighbor_offsets:
-                nx, ny = x + dx, y + dy
-                if not (gb['min_gx'] <= nx <= gb['max_gx'] and gb['min_gy'] <= ny <= gb['max_gy']):
-                    continue
-                if (nx, ny) not in occupancy:
-                    is_frontier = True
-                    has_all_neighbors_known = False
-                    break
-
-            if is_frontier:
-                frontiers.add(cell)
-            elif has_all_neighbors_known:
-                non_frontier_candidates.add(cell)
-
-        # Remove non-frontier cells from candidates
-        self._frontier_candidates -= non_frontier_candidates
-
-        if not frontiers:
-            self._cached_frontiers = []
-            return []
-
-        # Cluster frontiers using flood fill
-        frontier_list = frontiers
-        visited = set()
-        clusters = []
-
-        for f in frontier_list:
-            if f in visited:
-                continue
-            cluster = []
-            queue = deque([f])
-            visited.add(f)
-
-            while queue:
-                current = queue.popleft()
-                cluster.append(current)
-                cx, cy = current
-                for dx, dy in neighbor_offsets:
-                    nbr = (cx + dx, cy + dy)
-                    if nbr in frontier_list and nbr not in visited:
-                        visited.add(nbr)
-                        queue.append(nbr)
-
-            # Only keep clusters with sufficient size
-            if len(cluster) > 6:
-                avg_x = sum(c[0] for c in cluster) / len(cluster)
-                avg_y = sum(c[1] for c in cluster) / len(cluster)
-                best_point = min(cluster, key=lambda p: (p[0] - avg_x)**2 + (p[1] - avg_y)**2)
-                wx, wy = self.grid_to_world(best_point[0], best_point[1])
-                clusters.append({
-                    'pos': (wx, wy),
-                    'grid_pos': best_point,
-                    'size': len(cluster)
-                })
+        clusters = detect_frontiers_numpy(
+            numpy_grid,
+            offset_x,
+            offset_y,
+            self.grid_resolution,
+            self.map_bounds
+        )
 
         self._cached_frontiers = clusters
         return clusters
 
     def calculate_coverage(self, use_cache=True):
         """
-        Calculate coverage percentage - INCREMENTAL VERSION.
+        Calculate coverage percentage - INCREMENTAL VERSION using Numpy grid.
 
         Args:
             use_cache: If True, use cached coverage if valid
@@ -256,13 +228,25 @@ class OccupancyGridManager:
         if self.total_free_cells == 0:
             return 0.0
 
-        current_count = len(self.explored_cells)
-        if use_cache and current_count == len(self._processed_explored_cells):
+        # Get current grid
+        current_grid = self._numba_occupancy.grid
+        offset_x, offset_y = self._numba_occupancy.grid_offset_x, self._numba_occupancy.grid_offset_y
+
+        # Initialize cache on first call
+        if self._last_coverage_grid is None:
+            self._last_coverage_grid = np.zeros_like(current_grid)
+
+        # Find cells that changed from 0 (unknown) to 1 (free)
+        new_free_mask = (self._last_coverage_grid == 0) & (current_grid == 1)
+
+        # If nothing changed and cache is valid, return cached value
+        if not np.any(new_free_mask) and use_cache:
             return self._cached_coverage
 
-        new_cells = self.explored_cells - self._processed_explored_cells
+        # Get coordinates of new free cells
+        new_coords = np.argwhere(new_free_mask)
 
-        if not new_cells:
+        if len(new_coords) == 0 and use_cache:
             return self._cached_coverage
 
         # Validate new cells against ground truth maze
@@ -274,26 +258,40 @@ class OccupancyGridManager:
         half_block = self._maze_half_block
         inv_block_size = self._maze_inv_block_size
 
-        new_valid_count = 0
-        for cell in new_cells:
-            wx = x_min + (cell[0] + 0.5) * grid_res
-            wy = y_min + (cell[1] + 0.5) * grid_res
+        # Vectorized conversion to world coordinates
+        abs_gx = new_coords[:, 1] + offset_x  # column = x
+        abs_gy = new_coords[:, 0] + offset_y  # row = y
+        wx = x_min + (abs_gx + 0.5) * grid_res
+        wy = y_min + (abs_gy + 0.5) * grid_res
 
-            mx = int((wx + half_block) * inv_block_size)
-            my = int((wy + half_block) * inv_block_size)
+        # Vectorized conversion to maze coordinates
+        mx = ((wx + half_block) * inv_block_size).astype(int)
+        my = ((wy + half_block) * inv_block_size).astype(int)
 
-            if 0 <= mx < maze_w and 0 <= my < maze_h:
-                if maze_grid[my, mx] == 0:
-                    new_valid_count += 1
+        # Check bounds
+        valid_mask = (mx >= 0) & (mx < maze_w) & (my >= 0) & (my < maze_h)
+
+        # Count cells that are in bounds AND correspond to free cells in ground truth
+        # Use advanced indexing to check maze values in one operation
+        valid_indices = np.where(valid_mask)[0]
+        if len(valid_indices) > 0:
+            mx_valid = mx[valid_indices]
+            my_valid = my[valid_indices]
+            # Check which of these valid cells are free (0) in ground truth
+            is_free_in_maze = (maze_grid[my_valid, mx_valid] == 0)
+            new_valid_count = np.sum(is_free_in_maze)
+        else:
+            new_valid_count = 0
 
         self._incremental_valid_count += new_valid_count
-        self._processed_explored_cells.update(new_cells)
+
+        # Update cache
+        self._last_coverage_grid = current_grid.copy()
 
         coverage_percent = min(100.0, (self._incremental_valid_count / self.total_free_cells) * 100)
 
         self._cached_coverage = coverage_percent
         self._coverage_cache_valid = True
-        self._coverage_explored_count = current_count
 
         return coverage_percent
 
@@ -307,10 +305,78 @@ class OccupancyGridManager:
 
     def get_grid_stats(self):
         """Get statistics about the grid state."""
+        numpy_grid = self._numba_occupancy.grid
+        explored_count = np.sum(numpy_grid == 1)
+        obstacle_count = np.sum(numpy_grid == 2)
+
         return {
-            'explored_cells': len(self.explored_cells),
-            'obstacle_cells': len(self.obstacle_cells),
-            'frontier_candidates': len(self._frontier_candidates),
+            'explored_cells': int(explored_count),
+            'obstacle_cells': int(obstacle_count),
             'total_free_cells': self.total_free_cells,
-            'coverage': self._cached_coverage
+            'coverage': self._cached_coverage,
+            'valid_explored_count': self._incremental_valid_count
+        }
+
+    def debug_coverage_discrepancy(self):
+        """
+        Debug helper to identify why coverage might not reach 100%.
+
+        Returns:
+            Dict with diagnostic information
+        """
+        # Get all free cells from the grid
+        numpy_grid = self._numba_occupancy.grid
+        offset_x, offset_y = self._numba_occupancy.grid_offset_x, self._numba_occupancy.grid_offset_y
+
+        free_coords = np.argwhere(numpy_grid == 1)
+        total_explored = len(free_coords)
+
+        if total_explored == 0:
+            return {'message': 'No cells explored yet'}
+
+        # Convert all to absolute coordinates and check against maze
+        abs_gx = free_coords[:, 1] + offset_x
+        abs_gy = free_coords[:, 0] + offset_y
+
+        x_min = self.map_bounds['x_min']
+        y_min = self.map_bounds['y_min']
+        grid_res = self.grid_resolution
+        half_block = self._maze_half_block
+        inv_block_size = self._maze_inv_block_size
+
+        wx = x_min + (abs_gx + 0.5) * grid_res
+        wy = y_min + (abs_gy + 0.5) * grid_res
+
+        mx = ((wx + half_block) * inv_block_size).astype(int)
+        my = ((wy + half_block) * inv_block_size).astype(int)
+
+        maze_h, maze_w = self.env.maze_grid.shape
+        maze_grid = self.env.maze_grid
+
+        # Count different categories
+        in_bounds = (mx >= 0) & (mx < maze_w) & (my >= 0) & (my < maze_h)
+        out_of_bounds_count = np.sum(~in_bounds)
+
+        in_bounds_idx = np.where(in_bounds)[0]
+        if len(in_bounds_idx) > 0:
+            mx_valid = mx[in_bounds_idx]
+            my_valid = my[in_bounds_idx]
+            is_free = (maze_grid[my_valid, mx_valid] == 0)
+            is_obstacle = (maze_grid[my_valid, mx_valid] == 1)
+
+            valid_free_count = np.sum(is_free)
+            mapped_to_obstacle_count = np.sum(is_obstacle)
+        else:
+            valid_free_count = 0
+            mapped_to_obstacle_count = 0
+
+        return {
+            'total_explored_cells': total_explored,
+            'out_of_bounds': out_of_bounds_count,
+            'mapped_to_obstacles': mapped_to_obstacle_count,
+            'valid_free_cells': valid_free_count,
+            'expected_free_cells': self.total_free_cells,
+            'incremental_count': self._incremental_valid_count,
+            'discrepancy': self.total_free_cells - valid_free_count,
+            'coverage_from_count': (valid_free_count / self.total_free_cells * 100) if self.total_free_cells > 0 else 0
         }

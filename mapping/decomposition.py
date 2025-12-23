@@ -6,22 +6,25 @@ Provides methods for decomposing free space into rectangular regions.
 import numpy as np
 
 
-def decompose_grid_to_rectangles(occupancy_grid, max_rects=None):
+def decompose_grid_to_rectangles(occupancy_grid, offset_x=0, offset_y=0, max_rects=None):
     """
     Decomposes free space into rectangles and optionally returns only the top N largest.
 
-    This function takes an occupancy grid and partitions the free space into
-    non-overlapping rectangles using a greedy maximal rectangle decomposition algorithm.
+    This function takes an occupancy grid (Numpy array or dict) and partitions the free
+    space into non-overlapping rectangles using a greedy maximal rectangle decomposition.
 
     Args:
-        occupancy_grid (dict): Dictionary mapping (gx, gy) tuples to occupancy values.
-                               Value 1 indicates free space, other values are ignored.
+        occupancy_grid (np.ndarray or dict): Either:
+                                             - 2D Numpy array where value 1 = free space
+                                             - Dictionary mapping (gx, gy) -> occupancy values
+        offset_x (int): Grid offset in x direction (for Numpy arrays)
+        offset_y (int): Grid offset in y direction (for Numpy arrays)
         max_rects (int, optional): If specified, only return the N largest rectangles
                                    sorted by area (width × height).
 
     Returns:
         list: List of rectangles as tuples (gx, gy, width, height) where:
-              - gx, gy: Grid coordinates of bottom-left corner
+              - gx, gy: Grid coordinates of bottom-left corner (in absolute coords)
               - width, height: Rectangle dimensions in grid cells
 
     Examples:
@@ -29,29 +32,49 @@ def decompose_grid_to_rectangles(occupancy_grid, max_rects=None):
         >>> rects = decompose_grid_to_rectangles(occupancy)
         >>> # Returns [(0, 0, 2, 2)] - one 2×2 rectangle
 
-        >>> rects = decompose_grid_to_rectangles(occupancy, max_rects=5)
-        >>> # Returns at most 5 largest rectangles
+        >>> numpy_grid = np.array([[1, 1], [1, 1]])
+        >>> rects = decompose_grid_to_rectangles(numpy_grid, offset_x=0, offset_y=0)
+        >>> # Returns [(0, 0, 2, 2)]
     """
-    if not occupancy_grid:
-        return []
+    # Handle Numpy array input (NEW FAST PATH)
+    if isinstance(occupancy_grid, np.ndarray):
+        # Extract boolean mask for free cells
+        grid = (occupancy_grid == 1)
 
-    # Filter only free cells to find bounds
-    free_cells = [k for k, v in occupancy_grid.items() if v == 1]
-    if not free_cells:
-        return []
+        # Check if there are any free cells
+        if not np.any(grid):
+            return []
 
-    xs = [c[0] for c in free_cells]
-    ys = [c[1] for c in free_cells]
-    min_x, max_x = min(xs), max(xs)
-    min_y, max_y = min(ys), max(ys)
+        h, w = grid.shape
+        min_x, min_y = 0, 0
 
-    w = max_x - min_x + 1
-    h = max_y - min_y + 1
+    # Handle legacy dictionary input (BACKWARD COMPATIBILITY)
+    else:
+        if not occupancy_grid:
+            return []
 
-    # Build dense boolean grid (True = Free)
-    grid = np.zeros((h, w), dtype=bool)
-    for (gx, gy) in free_cells:
-        grid[gy - min_y, gx - min_x] = True
+        # Filter only free cells to find bounds
+        free_cells = [k for k, v in occupancy_grid.items() if v == 1]
+        if not free_cells:
+            return []
+
+        xs = [c[0] for c in free_cells]
+        ys = [c[1] for c in free_cells]
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+
+        w = max_x - min_x + 1
+        h = max_y - min_y + 1
+
+        # Build dense boolean grid (True = Free)
+        grid = np.zeros((h, w), dtype=bool)
+        for (gx, gy) in free_cells:
+            grid[gy - min_y, gx - min_x] = True
+
+        # For dict input, offset is embedded in the coordinates
+        offset_x = min_x
+        offset_y = min_y
+        min_x, min_y = 0, 0
 
     # Decompose using greedy maximal rectangles
     rects = []
@@ -77,8 +100,8 @@ def decompose_grid_to_rectangles(occupancy_grid, max_rects=None):
                 break
             current_h += 1
 
-        # Store rect (gx, gy, w, h)
-        rects.append((c + min_x, r + min_y, current_w, current_h))
+        # Store rect (gx, gy, w, h) in absolute coordinates
+        rects.append((c + min_x + offset_x, r + min_y + offset_y, current_w, current_h))
 
         # Mark as visited
         remaining[r : r + current_h, c : c + current_w] = False

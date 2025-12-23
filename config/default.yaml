@@ -24,7 +24,7 @@ physics:
 
 planning:
   grid_resolution: 0.5
-  return_home_coverage: 100.0
+  return_home_coverage: 98.0
   utility_weights:
     direction_bias: 2.5
     size: 0.3

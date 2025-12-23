@@ -336,3 +336,105 @@ class NumbaOccupancyGrid:
             new_obstacles.append((int(out_obs_cells[i, 0]), int(out_obs_cells[i, 1])))
 
         return n_points, new_free, new_obstacles
+
+
+def detect_frontiers_numpy(grid, offset_x, offset_y, grid_resolution, map_bounds):
+    """
+    Detect frontier cells using efficient Numpy operations.
+
+    A frontier cell is a free cell (value=1) that has at least one unknown neighbor (value=0).
+
+    Args:
+        grid: 2D numpy array (height, width) with values 0=unknown, 1=free, 2=obstacle
+        offset_x, offset_y: Grid offset coordinates
+        grid_resolution: Size of each grid cell in meters
+        map_bounds: Dict with 'x_min', 'x_max', 'y_min', 'y_max'
+
+    Returns:
+        List of frontier clusters, each with 'pos', 'grid_pos', and 'size'
+    """
+    from scipy import ndimage
+
+    height, width = grid.shape
+
+    # Calculate valid grid bounds (exclude padding and stay within map bounds)
+    # Convert map bounds to grid indices
+    min_valid_x = int((map_bounds['x_min'] - map_bounds['x_min']) / grid_resolution) - offset_x
+    max_valid_x = int((map_bounds['x_max'] - map_bounds['x_min']) / grid_resolution) - offset_x
+    min_valid_y = int((map_bounds['y_min'] - map_bounds['y_min']) / grid_resolution) - offset_y
+    max_valid_y = int((map_bounds['y_max'] - map_bounds['y_min']) / grid_resolution) - offset_y
+
+    # Clamp to grid dimensions
+    min_valid_x = max(0, min_valid_x)
+    max_valid_x = min(width, max_valid_x)
+    min_valid_y = max(0, min_valid_y)
+    max_valid_y = min(height, max_valid_y)
+
+    # Create mask for valid region (exclude padding)
+    valid_region_mask = np.zeros((height, width), dtype=bool)
+    valid_region_mask[min_valid_y:max_valid_y, min_valid_x:max_valid_x] = True
+
+    # Create mask for free cells (only in valid region)
+    free_mask = (grid == 1) & valid_region_mask
+
+    # Create a padded grid to check neighbors (pad with non-zero to avoid edge artifacts)
+    padded = np.pad(grid, pad_width=1, mode='constant', constant_values=2)
+
+    # Check if any neighbor is unknown
+    # We do this by checking if padded grid has 0 in any neighbor position
+    frontier_mask = np.zeros((height, width), dtype=bool)
+
+    for dy in [-1, 0, 1]:
+        for dx in [-1, 0, 1]:
+            if dx == 0 and dy == 0:
+                continue
+            # Shift padded grid and check for unknown cells
+            shifted = padded[1+dy:1+dy+height, 1+dx:1+dx+width]
+            frontier_mask |= (shifted == 0)
+
+    # Combine: must be free AND adjacent to unknown AND in valid region
+    frontier_mask = free_mask & frontier_mask
+
+    if not np.any(frontier_mask):
+        return []
+
+    # Label connected components
+    labeled, num_features = ndimage.label(frontier_mask, structure=np.ones((3, 3)))
+
+    # Extract clusters
+    clusters = []
+    for cluster_id in range(1, num_features + 1):
+        cluster_mask = (labeled == cluster_id)
+        cluster_size = np.sum(cluster_mask)
+
+        # Only keep clusters with sufficient size
+        if cluster_size <= 6:
+            continue
+
+        # Find cluster coordinates
+        coords = np.argwhere(cluster_mask)
+
+        # Calculate centroid
+        avg_y = np.mean(coords[:, 0])
+        avg_x = np.mean(coords[:, 1])
+
+        # Find point closest to centroid
+        distances = (coords[:, 0] - avg_y)**2 + (coords[:, 1] - avg_x)**2
+        best_idx = np.argmin(distances)
+        best_y, best_x = coords[best_idx]
+
+        # Convert to absolute grid coordinates
+        abs_gx = int(best_x) + offset_x
+        abs_gy = int(best_y) + offset_y
+
+        # Convert to world coordinates
+        wx = map_bounds['x_min'] + (abs_gx + 0.5) * grid_resolution
+        wy = map_bounds['y_min'] + (abs_gy + 0.5) * grid_resolution
+
+        clusters.append({
+            'pos': (wx, wy),
+            'grid_pos': (abs_gx, abs_gy),
+            'size': int(cluster_size)
+        })
+
+    return clusters

@@ -120,19 +120,19 @@ class RealtimeVisualizer:
         ax = self.axes['grid']
         mapper = self.mapper
 
-        # Create grid image
-        grid_x = int((mapper.map_bounds['x_max'] - mapper.map_bounds['x_min']) / mapper.grid_manager.grid_resolution)
-        grid_y = int((mapper.map_bounds['y_max'] - mapper.map_bounds['y_min']) / mapper.grid_manager.grid_resolution)
-        grid_image = np.ones((grid_y, grid_x, 3)) * 0.7
+        # Get Numpy grid directly (FAST PATH - no dictionary iteration)
+        numpy_grid = mapper.grid_manager.get_numpy_grid()
+        grid_h, grid_w = numpy_grid.shape
 
-        # Fill in occupancy data
-        for cell, value in mapper.grid_manager.occupancy_grid.items():
-            gx, gy = cell
-            if 0 <= gx < grid_x and 0 <= gy < grid_y:
-                if value == 1:
-                    grid_image[gy, gx] = [1, 1, 1]  # Free space - white
-                elif value == 2:
-                    grid_image[gy, gx] = [0, 0, 0]  # Obstacle - black
+        # Create grid image (0=unknown, 1=free, 2=obstacle)
+        grid_image = np.ones((grid_h, grid_w, 3)) * 0.7  # Unknown = gray
+
+        # Vectorized operations (MUCH faster than dict iteration)
+        free_mask = (numpy_grid == 1)
+        obstacle_mask = (numpy_grid == 2)
+
+        grid_image[free_mask] = [1, 1, 1]  # Free space = white
+        grid_image[obstacle_mask] = [0, 0, 0]  # Obstacle = black
 
         extent = [mapper.map_bounds['x_min'], mapper.map_bounds['x_max'],
                  mapper.map_bounds['y_min'], mapper.map_bounds['y_max']]
@@ -169,7 +169,10 @@ class RealtimeVisualizer:
     def _draw_partitions(self, ax):
         """Draw rectangular decomposition overlay."""
         mapper = self.mapper
-        rects = decompose_grid_to_rectangles(mapper.grid_manager.occupancy_grid, max_rects=5)
+        # Get Numpy grid and offset
+        numpy_grid = mapper.grid_manager.get_numpy_grid()
+        offset_x, offset_y = mapper.grid_manager.get_grid_offset()
+        rects = decompose_grid_to_rectangles(numpy_grid, offset_x, offset_y, max_rects=5)
 
         for gx, gy, w, h in rects:
             # Convert to world coordinates
@@ -242,28 +245,31 @@ class RealtimeVisualizer:
         ax = self.axes['frontier']
         mapper = self.mapper
 
-        # Draw explored cells
-        explored_points = []
-        for cell in mapper.grid_manager.explored_cells:
-            if mapper.grid_manager.occupancy_grid.get(cell) == 1:
-                x, y = mapper.grid_to_world(cell[0], cell[1])
-                explored_points.append([x, y])
+        # Get Numpy grid and offset (FAST PATH)
+        numpy_grid = mapper.grid_manager.get_numpy_grid()
+        offset_x, offset_y = mapper.grid_manager.get_grid_offset()
 
-        if explored_points:
-            explored_array = np.array(explored_points)
-            ax.scatter(explored_array[:, 0], explored_array[:, 1],
-                      c='lightblue', s=3, alpha=0.4, marker='s')
+        # Find explored free cells using vectorized operations
+        free_coords = np.argwhere(numpy_grid == 1)
+        if len(free_coords) > 0:
+            # Convert grid coords to world coords (vectorized)
+            grid_x = free_coords[:, 1] + offset_x  # column = x
+            grid_y = free_coords[:, 0] + offset_y  # row = y
+            world_x = mapper.map_bounds['x_min'] + (grid_x + 0.5) * mapper.grid_manager.grid_resolution
+            world_y = mapper.map_bounds['y_min'] + (grid_y + 0.5) * mapper.grid_manager.grid_resolution
 
-        # Draw obstacles
-        obstacle_points = []
-        for cell in mapper.grid_manager.obstacle_cells:
-            x, y = mapper.grid_to_world(cell[0], cell[1])
-            obstacle_points.append([x, y])
+            ax.scatter(world_x, world_y, c='lightblue', s=3, alpha=0.4, marker='s')
 
-        if obstacle_points:
-            obstacle_array = np.array(obstacle_points)
-            ax.scatter(obstacle_array[:, 0], obstacle_array[:, 1],
-                      c='black', s=3, marker='s')
+        # Find obstacles using vectorized operations
+        obstacle_coords = np.argwhere(numpy_grid == 2)
+        if len(obstacle_coords) > 0:
+            # Convert grid coords to world coords (vectorized)
+            grid_x = obstacle_coords[:, 1] + offset_x
+            grid_y = obstacle_coords[:, 0] + offset_y
+            world_x = mapper.map_bounds['x_min'] + (grid_x + 0.5) * mapper.grid_manager.grid_resolution
+            world_y = mapper.map_bounds['y_min'] + (grid_y + 0.5) * mapper.grid_manager.grid_resolution
+
+            ax.scatter(world_x, world_y, c='black', s=3, marker='s')
 
         # Draw frontiers
         frontiers_data = mapper.detect_frontiers()

@@ -18,13 +18,13 @@ class SimulationLogger:
         self.frames = []
         self.metadata = {}
         self.start_time = None
-        # Cache for delta encoding
-        self.last_occupancy_grid = {} 
+        # Cache for delta encoding (now uses Numpy array)
+        self.last_occupancy_grid = None 
 
     def initialize(self, mapper, env_config):
         """Initialize logger with simulation metadata."""
         self.start_time = datetime.now()
-        self.last_occupancy_grid = {}
+        self.last_occupancy_grid = None
 
         # Store metadata about the simulation
         self.metadata = {
@@ -44,27 +44,43 @@ class SimulationLogger:
 
     def log_frame(self, step, mapper):
         """
-        Log a single frame of simulation state using Delta Encoding.
-        
-        Instead of saving the whole grid every frame, we only save the cells 
+        Log a single frame of simulation state using Delta Encoding with Numpy arrays.
+
+        Instead of saving the whole grid every frame, we only save the cells
         that have changed since the last frame.
         """
         import pybullet as p
 
-        # 1. Calculate Occupancy Grid Delta
-        # Compare current grid with the last saved state
-        current_grid = mapper.grid_manager.occupancy_grid
-        delta = []
+        # 1. Calculate Occupancy Grid Delta using Numpy (FAST PATH)
+        current_grid = mapper.grid_manager.get_numpy_grid()
+        offset_x, offset_y = mapper.grid_manager.get_grid_offset()
 
-        # We assume cells only change from unknown -> free/obstacle, or rarely free <-> obstacle
-        # Since the mapper accumulates keys, we iterate the mapper's grid
-        for cell, val in current_grid.items():
-            # Check if this cell is new or changed value
-            if cell not in self.last_occupancy_grid or self.last_occupancy_grid[cell] != val:
-                # Store as integer list [x, y, val] - efficient binary storage
-                delta.append([cell[0], cell[1], val])
-                # Update our local cache
-                self.last_occupancy_grid[cell] = val
+        # Initialize cache on first frame
+        if self.last_occupancy_grid is None:
+            self.last_occupancy_grid = np.zeros_like(current_grid)
+
+        # Find changed cells using vectorized comparison
+        changed_mask = (current_grid != self.last_occupancy_grid)
+        changed_coords = np.argwhere(changed_mask)
+
+        # Build delta list with absolute coordinates
+        delta = []
+        for coord in changed_coords:
+            y, x = coord  # row, col
+            abs_x = x + offset_x
+            abs_y = y + offset_y
+            val = int(current_grid[y, x])
+            delta.append([abs_x, abs_y, val])
+
+        # Update cache
+        self.last_occupancy_grid = current_grid.copy()
+
+        # Extract explored and obstacle cells from Numpy grid
+        free_coords = np.argwhere(current_grid == 1)
+        explored_cells = [[int(c[1] + offset_x), int(c[0] + offset_y)] for c in free_coords]
+
+        obstacle_coords = np.argwhere(current_grid == 2)
+        obstacle_cells = [[int(c[1] + offset_x), int(c[0] + offset_y)] for c in obstacle_coords]
 
         frame = {
             'step': step,
@@ -74,9 +90,9 @@ class SimulationLogger:
             # DELTA ENCODING: Store only the changes
             'occupancy_grid_delta': delta,
 
-            # These lists are relatively small, so we store them fully
-            'explored_cells': [list(c) for c in mapper.grid_manager.explored_cells],
-            'obstacle_cells': [list(c) for c in mapper.grid_manager.obstacle_cells],
+            # These lists are now extracted from Numpy grid
+            'explored_cells': explored_cells,
+            'obstacle_cells': obstacle_cells,
 
             # Frontier data
             'frontiers': mapper.detect_frontiers(),
