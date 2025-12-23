@@ -21,8 +21,8 @@ from behaviors.path_follower import PathFollower
 from behaviors.exploration_direction_tracker import ExplorationDirectionTracker
 
 if TYPE_CHECKING:
-    from occupancy_grid_manager import OccupancyGridManager
-    from pathfinding import NumbaAStarHelper
+    from mapping.grid_manager import OccupancyGridManager
+    from navigation.pathfinding import NumbaAStarHelper
     from coordination.utility_calculator import FrontierUtilityCalculator
 
 

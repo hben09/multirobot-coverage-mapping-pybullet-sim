@@ -1,5 +1,5 @@
-"""Utility modules for robotics calculations."""
+"""Utility modules for configuration loading."""
 
-from .geometry import distance_to, angle_to, normalize_angle, heading_vector
-
-__all__ = ['distance_to', 'angle_to', 'normalize_angle', 'heading_vector']
+# Geometry utilities have been moved to navigation.geometry
+# Import from navigation.geometry instead:
+#   from navigation.geometry import distance_to, angle_to, normalize_angle, heading_vector

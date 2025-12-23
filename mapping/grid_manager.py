@@ -7,7 +7,7 @@ separation of concerns and maintainability.
 
 import numpy as np
 from collections import deque
-from numba_occupancy import NumbaOccupancyGrid
+from mapping.numba_accelerator import NumbaOccupancyGrid
 
 
 class OccupancyGridManager:

@@ -3,12 +3,12 @@ import time
 from collections import defaultdict
 import os
 
-from sim_logger import SimulationLogger
-from pathfinding import NumbaAStarHelper
-from occupancy_grid_manager import OccupancyGridManager
-from coordination_controller import CoordinationController
-from simulation_initializer import SimulationInitializer
-from realtime_visualizer import RealtimeVisualizer
+from visualization.logger import SimulationLogger
+from navigation.pathfinding import NumbaAStarHelper
+from mapping.grid_manager import OccupancyGridManager
+from coordination.controller import CoordinationController
+from simulation.initializer import SimulationInitializer
+from visualization.realtime import RealtimeVisualizer
 from utils.config_loader import load_config
 
 class SimulationManager:
@@ -379,11 +379,11 @@ def main():
     # Handle video rendering
     if log_filepath is not None and cfg['system']['render_video']:
         try:
-            from video_renderer import render_video_from_log
+            from visualization.renderer import render_video_from_log
             print("\nRendering video with OpenCV (fast parallel renderer)...")
             render_video_from_log(log_filepath)
         except ImportError:
-            print("Warning: video_renderer.py not found, skipping video rendering")
+            print("Warning: visualization.renderer not found, skipping video rendering")
         except Exception as e:
             print(f"Error rendering video: {e}")
 

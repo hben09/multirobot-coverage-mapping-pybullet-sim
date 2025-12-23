@@ -7,7 +7,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import pybullet as p
-from spatial_decomposition import decompose_grid_to_rectangles
+from mapping.decomposition import decompose_grid_to_rectangles
 
 
 class RealtimeVisualizer:

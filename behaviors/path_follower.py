@@ -9,7 +9,7 @@ import numpy as np
 from typing import Tuple, Optional
 from robot.robot_state import RobotState
 from robot.robot_driver import RobotDriver
-from utils.geometry import distance_to, angle_to
+from navigation.geometry import distance_to, angle_to
 
 
 class PathFollower:
