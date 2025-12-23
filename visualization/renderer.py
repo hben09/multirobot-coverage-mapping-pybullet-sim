@@ -185,11 +185,7 @@ def render_occupancy_grid(frame, metadata, transform, panel_size):
 
     # 1. Draw occupancy grid cells
     for cell_key, value in frame['occupancy_grid'].items():
-        if isinstance(cell_key, str):
-            gx, gy = map(int, cell_key.split(','))
-        else:
-            gx, gy = cell_key
-
+        gx, gy = cell_key
         px, py = transform.grid_to_pixel(gx, gy)
 
         half_size = cell_pixel_size // 2

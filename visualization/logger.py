@@ -173,16 +173,8 @@ class SimulationLogger:
                 del new_frame['occupancy_grid_delta']
                 
             elif 'occupancy_grid' in rf:
-                # LEGACY FALLBACK: Convert old string keys to tuple keys if needed
-                # The old format was {'10,20': 1}, we prefer {(10,20): 1}
-                raw_grid = rf['occupancy_grid']
-                if raw_grid and isinstance(next(iter(raw_grid)), str):
-                    converted_grid = {}
-                    for k, v in raw_grid.items():
-                        gx, gy = map(int, k.split(','))
-                        converted_grid[(gx, gy)] = v
-                    new_frame['occupancy_grid'] = converted_grid
-                # If it's already in the right format (or empty), just pass it
+                # Already in correct format (tuple keys)
+                pass
             
             reconstructed_frames.append(new_frame)
             

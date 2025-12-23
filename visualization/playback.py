@@ -156,14 +156,10 @@ class SimulationPlayback:
         grid_y = int((bounds['y_max'] - bounds['y_min']) / resolution)
         grid_image = np.ones((grid_y, grid_x, 3)) * 0.7
         
-        # Parse occupancy grid
-        # UPDATED: Handles both tuple keys (new format) and string keys (legacy format)
+        # Parse occupancy grid (tuple keys)
         for cell_key, value in frame['occupancy_grid'].items():
-            if isinstance(cell_key, str):
-                gx, gy = map(int, cell_key.split(','))
-            else:
-                gx, gy = cell_key
-                
+            gx, gy = cell_key
+
             if 0 <= gx < grid_x and 0 <= gy < grid_y:
                 if value == 1:
                     grid_image[gy, gx] = [1, 1, 1]  # White for free
@@ -228,17 +224,11 @@ class SimulationPlayback:
         if frame['explored_cells']:
             explored_points = []
             for cell in frame['explored_cells']:
-                # UPDATED: Handles both tuple/list keys
                 cell_tuple = tuple(cell)
-                # Check directly in occupancy grid dict (which now uses tuple keys)
                 if frame['occupancy_grid'].get(cell_tuple) == 1:
                     x, y = self.grid_to_world(cell[0], cell[1])
                     explored_points.append([x, y])
-                # Fallback for old string keys
-                elif frame['occupancy_grid'].get(f"{cell[0]},{cell[1]}") == 1:
-                    x, y = self.grid_to_world(cell[0], cell[1])
-                    explored_points.append([x, y])
-                    
+
             if explored_points:
                 explored_arr = np.array(explored_points)
                 ax_frontier.scatter(explored_arr[:, 0], explored_arr[:, 1],
