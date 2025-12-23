@@ -331,10 +331,14 @@ class RobotAgent:
         start_grid = self.grid_manager.world_to_grid(pos_array[0], pos_array[1])
         goal_grid = self.grid_manager.world_to_grid(goal_position[0], goal_position[1])
 
-        # Update planner with current grid state
+        # Update planner with current grid state (DIRECT NUMPY REFERENCE)
+        numpy_grid = self.grid_manager.get_numpy_grid()
+        grid_offset_x, grid_offset_y = self.grid_manager.get_grid_offset()
+
         self.planner.update_grid(
-            self.grid_manager.occupancy_grid,
-            self.grid_manager.obstacle_cells,
+            numpy_grid,
+            grid_offset_x,
+            grid_offset_y,
             self.safety_margin
         )
 

@@ -230,8 +230,7 @@ class NumbaAStarHelper:
         self.grid = None
         self.grid_offset_x = 0
         self.grid_offset_y = 0
-        self._last_explored_count = 0
-        self._last_obstacle_count = 0
+        self._inflated_grid = None
         self._warmed_up = False
 
     def _warmup(self):
@@ -242,72 +241,46 @@ class NumbaAStarHelper:
         _numba_astar_core(test_grid, 0, 0, 5, 5, 0, 0, True, 100)
         self._warmed_up = True
 
-    def update_grid(self, occupancy_grid, obstacle_cells, safety_margin=1):
-        """Convert dict-based occupancy grid to numpy array for Numba."""
-        if not occupancy_grid:
+    def update_grid(self, numpy_grid, grid_offset_x, grid_offset_y, safety_margin=1):
+        """
+        Update grid reference from NumbaOccupancyGrid.
+
+        Args:
+            numpy_grid: Direct reference to NumbaOccupancyGrid.grid (Numpy array)
+            grid_offset_x: X offset from NumbaOccupancyGrid
+            grid_offset_y: Y offset from NumbaOccupancyGrid
+            safety_margin: Number of cells to inflate around obstacles
+        """
+        if numpy_grid is None:
             self.grid = None
+            self._inflated_grid = None
             return
 
-        # 1. Check if rebuild needed
-        if (len(occupancy_grid) == self._last_explored_count and
-            len(obstacle_cells) == self._last_obstacle_count and
-            self.grid is not None):
-            return
+        # Store direct reference to the grid (no copying!)
+        self.grid = numpy_grid
+        self.grid_offset_x = grid_offset_x
+        self.grid_offset_y = grid_offset_y
 
-        self._last_explored_count = len(occupancy_grid)
-        self._last_obstacle_count = len(obstacle_cells)
-
-        # 2. Find grid bounds
-        all_cells = list(occupancy_grid.keys())
-        xs = [c[0] for c in all_cells]
-        ys = [c[1] for c in all_cells]
-
-        min_x, max_x = min(xs), max(xs)
-        min_y, max_y = min(ys), max(ys)
-
-        # 3. Add padding for safety margin
-        padding = safety_margin + 2
-        min_x -= padding
-        min_y -= padding
-        max_x += padding
-        max_y += padding
-
-        self.grid_offset_x = min_x
-        self.grid_offset_y = min_y
-
-        width = max_x - min_x + 1
-        height = max_y - min_y + 1
-
-        # 4. Initialize grid
-        self.grid = np.zeros((height, width), dtype=np.int8)
-
-        # 5. Fill occupancy values
-        for (x, y), val in occupancy_grid.items():
-            gx = x - min_x
-            gy = y - min_y
-            if 0 <= gx < width and 0 <= gy < height:
-                self.grid[gy, gx] = val
-
-        # 6. Mark obstacles
-        for (x, y) in obstacle_cells:
-            gx = x - min_x
-            gy = y - min_y
-            if 0 <= gx < width and 0 <= gy < height:
-                self.grid[gy, gx] = 2
-
-        # 7. Apply safety margin inflation
+        # Apply safety margin inflation to a working copy
         if safety_margin > 0:
-            inflated_mask = np.zeros_like(self.grid, dtype=np.bool_)
-            for (x, y) in obstacle_cells:
-                gx = x - min_x
-                gy = y - min_y
+            # Create inflated copy for pathfinding
+            self._inflated_grid = numpy_grid.copy()
+            height, width = self._inflated_grid.shape
+
+            # Find all obstacle cells (value == 2)
+            obstacle_ys, obstacle_xs = np.where(numpy_grid == 2)
+
+            # Inflate around each obstacle
+            for ox, oy in zip(obstacle_xs, obstacle_ys):
                 for dx in range(-safety_margin, safety_margin + 1):
                     for dy in range(-safety_margin, safety_margin + 1):
-                        nx, ny = gx + dx, gy + dy
+                        nx, ny = ox + dx, oy + dy
                         if 0 <= nx < width and 0 <= ny < height:
-                            if self.grid[ny, nx] == 1:
-                                inflated_mask[ny, nx] = True
-            self.grid[inflated_mask] = 3
+                            # Only inflate free cells (value == 1)
+                            if self._inflated_grid[ny, nx] == 1:
+                                self._inflated_grid[ny, nx] = 3
+        else:
+            self._inflated_grid = None
 
     def plan_path(self, start_grid, goal_grid, use_inflation=True):
         """Plan path using Numba-accelerated A*."""
@@ -316,9 +289,12 @@ class NumbaAStarHelper:
         if self.grid is None:
             return []
 
-        # 1. Attempt path with inflation
+        # Choose grid based on inflation setting
+        grid_to_use = self._inflated_grid if (use_inflation and self._inflated_grid is not None) else self.grid
+
+        # 1. Attempt path with chosen grid
         path_array, found = _numba_astar_core(
-            self.grid,
+            grid_to_use,
             start_grid[0], start_grid[1],
             goal_grid[0], goal_grid[1],
             self.grid_offset_x, self.grid_offset_y,

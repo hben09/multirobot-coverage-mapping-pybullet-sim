@@ -254,40 +254,46 @@ class NumbaOccupancyGrid:
         gy = int((y - self.map_bounds['y_min']) * self.inv_resolution)
         return gx, gy
     
-    def update_from_lidar(self, robot_pos, scan_points, occupancy_dict, explored_set, obstacle_set):
+    def update_from_lidar(self, robot_pos, scan_points):
         """
         Update the grid from LIDAR scan data.
-        
-        OPTIMIZATION: Only sync cells that actually changed from unknown (0) to 
-        free (1) or obstacle (2). Skip cells that were already known.
+
+        This method updates ONLY the Numpy grid (single source of truth).
+        Returns information about changed cells for optional dict synchronization.
+
+        Returns:
+            Tuple of (num_rays_processed, new_free_cells, new_obstacle_cells)
+            - new_free_cells: List of (x, y) tuples for newly discovered free cells
+            - new_obstacle_cells: List of (x, y) tuples for newly discovered obstacles
         """
         self._warmup()
-        
+
         if not scan_points:
-            return 0
-        
+            return 0, [], []
+
         # Convert robot position to grid coords
         robot_gx_offset, robot_gy_offset = self.world_to_grid(robot_pos[0], robot_pos[1])
         robot_gx_raw, robot_gy_raw = self.world_to_grid_raw(robot_pos[0], robot_pos[1])
-        
+
+        new_free = []
+        new_obstacles = []
+
         # Mark robot position
         if 0 <= robot_gx_offset < self.width and 0 <= robot_gy_offset < self.height:
             if self.grid[robot_gy_offset, robot_gx_offset] == 0:
                 self.grid[robot_gy_offset, robot_gx_offset] = 1
-                robot_raw = (robot_gx_raw, robot_gy_raw)
-                occupancy_dict[robot_raw] = 1
-                explored_set.add(robot_raw)
-        
+                new_free.append((robot_gx_raw, robot_gy_raw))
+
         # Convert scan points to numpy arrays
         n_points = len(scan_points)
         endpoints_world = np.empty((n_points, 2), dtype=np.float64)
         is_hit = np.empty(n_points, dtype=np.bool_)
-        
+
         for i, (x, y, hit) in enumerate(scan_points):
             endpoints_world[i, 0] = x
             endpoints_world[i, 1] = y
             is_hit[i] = hit
-        
+
         # Batch convert to grid coordinates
         endpoints_grid_raw = _batch_world_to_grid(
             endpoints_world,
@@ -295,7 +301,7 @@ class NumbaOccupancyGrid:
             self.map_bounds['y_min'],
             self.inv_resolution
         )
-        
+
         # Apply offset for array indexing
         endpoints_grid_offset = endpoints_grid_raw.copy()
         endpoints_grid_offset[:, 0] -= self.grid_offset_x
@@ -322,15 +328,11 @@ class NumbaOccupancyGrid:
             self.grid_offset_y
         )
 
-        # Sync ONLY new cells to dict/set
+        # Convert to Python lists for return
         for i in range(num_free):
-            cell = (int(out_free_cells[i, 0]), int(out_free_cells[i, 1]))
-            occupancy_dict[cell] = 1
-            explored_set.add(cell)
+            new_free.append((int(out_free_cells[i, 0]), int(out_free_cells[i, 1])))
 
         for i in range(num_obs):
-            cell = (int(out_obs_cells[i, 0]), int(out_obs_cells[i, 1]))
-            occupancy_dict[cell] = 2
-            obstacle_set.add(cell)
+            new_obstacles.append((int(out_obs_cells[i, 0]), int(out_obs_cells[i, 1])))
 
-        return n_points
+        return n_points, new_free, new_obstacles

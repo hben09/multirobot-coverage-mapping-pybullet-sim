@@ -26,13 +26,14 @@ class OccupancyGridManager:
         self.grid_resolution = grid_resolution
         self.env = env
 
-        # Grid storage
+        # Numba-accelerated occupancy grid (SINGLE SOURCE OF TRUTH)
+        self._numba_occupancy = NumbaOccupancyGrid(map_bounds, grid_resolution)
+
+        # DEPRECATED: Legacy dict/set kept temporarily for compatibility
+        # TODO: Remove these once all code uses Numpy grid directly
         self.occupancy_grid = {}  # 1=Free, 2=Obstacle
         self.explored_cells = set()
         self.obstacle_cells = set()
-
-        # Numba-accelerated occupancy grid
-        self._numba_occupancy = NumbaOccupancyGrid(map_bounds, grid_resolution)
 
         # Pre-compute maze lookup for coverage calculation
         block_physical_size = self.env.cell_size / 2.0
@@ -58,6 +59,24 @@ class OccupancyGridManager:
         self._cached_coverage = 0.0
         self._coverage_cache_valid = False
         self._coverage_explored_count = 0
+
+    def get_numpy_grid(self):
+        """
+        Get direct reference to the Numpy occupancy grid.
+
+        Returns:
+            Numpy array reference (not a copy!)
+        """
+        return self._numba_occupancy.grid
+
+    def get_grid_offset(self):
+        """
+        Get the grid offset coordinates.
+
+        Returns:
+            Tuple of (offset_x, offset_y)
+        """
+        return (self._numba_occupancy.grid_offset_x, self._numba_occupancy.grid_offset_y)
 
     def world_to_grid(self, x, y):
         """Convert world coordinates to grid coordinates."""
@@ -87,13 +106,21 @@ class OccupancyGridManager:
 
         old_explored_count = len(self.explored_cells)
 
-        self._numba_occupancy.update_from_lidar(
+        # Update Numpy grid (single source of truth)
+        num_rays, new_free_cells, new_obstacle_cells = self._numba_occupancy.update_from_lidar(
             robot_pos,
-            lidar_data,
-            self.occupancy_grid,
-            self.explored_cells,
-            self.obstacle_cells
+            lidar_data
         )
+
+        # Sync to legacy dicts/sets for backward compatibility
+        # TODO: Remove this once visualization code uses Numpy grid directly
+        for cell in new_free_cells:
+            self.occupancy_grid[cell] = 1
+            self.explored_cells.add(cell)
+
+        for cell in new_obstacle_cells:
+            self.occupancy_grid[cell] = 2
+            self.obstacle_cells.add(cell)
 
         # Track frontier candidates near newly explored areas
         if len(self.explored_cells) > old_explored_count:
