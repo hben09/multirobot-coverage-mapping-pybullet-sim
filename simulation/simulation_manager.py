@@ -113,10 +113,6 @@ class SimulationManager:
         """Detect and cluster frontier cells."""
         return self.grid_manager.detect_frontiers(use_cache)
 
-    def calculate_utility(self, robot, frontier):
-        """Utility Function."""
-        return self.coordinator.calculate_utility(robot, frontier)
-
     def assign_global_goals(self, step):
         """
         Auction-based Coordination loop.
