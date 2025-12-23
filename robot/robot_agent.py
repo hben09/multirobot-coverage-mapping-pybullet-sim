@@ -113,7 +113,7 @@ class RobotAgent:
         # 3. Update exploration direction from trajectory
         self.direction_tracker.update(self.state)
 
-    def think(self, plan_return_path_fn: Optional[Callable] = None) -> Optional[str]:
+    def think(self) -> Optional[str]:
         """
         THINK phase: Process sensor data and decide on actions.
 
@@ -122,10 +122,6 @@ class RobotAgent:
         2. Handles stuck recovery
         3. Plans paths autonomously when needed
         4. Determines navigation action
-
-        Args:
-            plan_return_path_fn: DEPRECATED - kept for backward compatibility
-                                Robot now plans its own paths
 
         Returns:
             Action command: 'FOLLOW_PATH', None, etc.
@@ -207,7 +203,6 @@ class RobotAgent:
     def update(
         self,
         should_sense: bool = True,
-        plan_return_path_fn: Optional[Callable] = None,
         grid_to_world_fn: Optional[Callable] = None
     ):
         """
@@ -217,7 +212,6 @@ class RobotAgent:
 
         Args:
             should_sense: Whether to perform sensing this tick
-            plan_return_path_fn: Function to plan return path (passed to think())
             grid_to_world_fn: Function to convert grid to world coords (passed to act())
         """
         # SENSE
@@ -225,7 +219,7 @@ class RobotAgent:
             self.sense()
 
         # THINK
-        action = self.think(plan_return_path_fn)
+        action = self.think()
 
         # ACT
         self.act(action, grid_to_world_fn)
