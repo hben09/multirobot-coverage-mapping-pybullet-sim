@@ -57,7 +57,7 @@ class RobotContainer:
         self.path_follower = PathFollower(
             waypoint_threshold=0.6,
             goal_threshold=0.5,
-            max_linear_vel=8.0,
+            max_linear_vel=3.0,
             max_angular_vel=4.0,
             turn_slowdown_angle=0.5
         )
