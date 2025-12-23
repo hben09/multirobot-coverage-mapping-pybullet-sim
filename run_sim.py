@@ -91,9 +91,6 @@ class SimulationManager:
         self.returning_home = False
         self.robots_home = set()
 
-        # Auction pattern setting
-        self.use_auction_pattern = self.plan_cfg.get('use_auction_pattern', True)
-
         # Logging
         self.logger = None
         self.env_config = initializer.get_env_config()
@@ -121,15 +118,6 @@ class SimulationManager:
         return self.coordinator.calculate_utility(robot, frontier)
 
     def assign_global_goals(self, step):
-        """Market-based Coordination loop."""
-        frontiers = self.detect_frontiers()
-        self.coordinator.assign_global_goals(
-            self.robots,
-            frontiers,
-            step
-        )
-
-    def assign_global_goals_auction(self, step):
         """
         Auction-based Coordination loop.
 
@@ -245,11 +233,8 @@ class SimulationManager:
                     self.returning_home = True
                     self.trigger_return_home()
                 elif not returning_home:
-                    # Use auction pattern if enabled, otherwise use traditional allocation
-                    if self.use_auction_pattern:
-                        self.assign_global_goals_auction(step)
-                    else:
-                        self.assign_global_goals(step)
+                    # Use auction pattern for task allocation
+                    self.assign_global_goals(step)
             
             perf_stats['global_planning'] += time.perf_counter() - t0
 
