@@ -223,14 +223,36 @@ class SimulationManager:
             if should_plan:
                 coverage = self.calculate_coverage(use_cache=False)
 
-                if not returning_home and coverage >= return_home_coverage:
-                    print(f"\n*** COVERAGE {coverage:.1f}% >= {return_home_coverage}% - RETURNING HOME ***")
-                    returning_home = True
-                    self.returning_home = True
-                    self.trigger_return_home()
-                elif not returning_home:
-                    # Use auction pattern for task allocation
-                    self.assign_global_goals(step)
+                # Check if there are any accessible frontiers
+                if not returning_home:
+                    frontiers = self.detect_frontiers(use_cache=False)
+
+                    # Check if any frontiers are accessible (not blacklisted by all robots)
+                    has_accessible_frontiers = False
+                    if frontiers:
+                        for frontier in frontiers:
+                            # Check if at least one robot can access this frontier
+                            for robot in robots:
+                                if frontier['grid_pos'] not in robot.state.blacklisted_goals:
+                                    has_accessible_frontiers = True
+                                    break
+                            if has_accessible_frontiers:
+                                break
+
+                    # Only trigger return home if:
+                    # 1. We have explored enough (coverage > 1%) AND
+                    # 2. No accessible frontiers remain
+                    # This prevents returning home immediately at start before any exploration
+                    if coverage > 1.0 and not has_accessible_frontiers:
+                        print(f"\n*** NO ACCESSIBLE FRONTIERS LEFT - RETURNING HOME ***")
+                        print(f"    (Total frontiers detected: {len(frontiers) if frontiers else 0})")
+                        print(f"    (Coverage: {coverage:.1f}%)")
+                        returning_home = True
+                        self.returning_home = True
+                        self.trigger_return_home()
+                    elif has_accessible_frontiers:
+                        # Use auction pattern for task allocation
+                        self.assign_global_goals(step)
 
             perf_stats['global_planning'] += time.perf_counter() - t0
 
