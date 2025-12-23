@@ -6,7 +6,8 @@ Refactored to use dictionary-based configuration.
 """
 
 import pybullet as p
-from simulation.environment import MapGenerator, PybulletRenderer
+from simulation.level_generator import MapGenerator
+from simulation.physics_engine import PybulletRenderer
 from robot import RobotContainer
 
 class SimulationInitializer:
