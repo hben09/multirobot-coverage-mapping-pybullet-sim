@@ -82,7 +82,6 @@ class SimulationManager:
             )
 
         self.coverage_history = []
-        self.claimed_goals = {}
 
         # Real-time visualization
         self.visualizer = RealtimeVisualizer(self)
@@ -340,7 +339,6 @@ class SimulationManager:
                     self.update_occupancy_grid(robot)
 
                 self.grid_manager.invalidate_coverage_cache()
-                self.grid_manager.invalidate_frontier_cache()
 
                 coverage = self.calculate_coverage()
                 self.coverage_history.append((step, coverage))

@@ -32,17 +32,20 @@ class MapGenerator:
         grid_height = self.maze_height * 2 + 1
         self.maze_grid = np.ones((grid_height, grid_width), dtype=int)
 
-        generators = {
-            'blank_box': self._generate_blank_box,
-            'cave': self._generate_cave,
-            'tunnel': self._generate_tunnel,
-            'rooms': self._generate_rooms,
-            'sewer': self._generate_sewer,
-            'corridor_rooms': self._generate_corridor_rooms,
-        }
-
-        generator = generators.get(env_type, self._generate_recursive_maze)
-        generator()
+        if env_type == 'blank_box':
+            self._generate_blank_box()
+        elif env_type == 'cave':
+            self._generate_cave()
+        elif env_type == 'tunnel':
+            self._generate_tunnel()
+        elif env_type == 'rooms':
+            self._generate_rooms()
+        elif env_type == 'sewer':
+            self._generate_sewer()
+        elif env_type == 'corridor_rooms':
+            self._generate_corridor_rooms()
+        else:
+            self._generate_recursive_maze()
 
         return self.maze_grid, self.entrance_cell
 

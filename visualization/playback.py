@@ -1,10 +1,10 @@
 """
-Offline Playback and Video Generation for Simulation Logs
+Interactive Playback Viewer for Simulation Logs
 
 Usage:
-    Interactive viewer:  python playback.py <log_file.npz>
-    Generate video:      python playback.py <log_file.npz> --video output.mp4
-    Both:                python playback.py <log_file.npz> --video output.mp4 --interactive
+    python playback.py <log_file.npz>
+
+Note: For video generation, use visualization/renderer.py instead (faster, multi-threaded).
 """
 
 import numpy as np
@@ -313,71 +313,22 @@ class SimulationPlayback:
         
         ani = animation.FuncAnimation(self.fig, update, interval=50, blit=True)
         plt.show()
-        
-    def generate_video(self, output_path, fps=30, dpi=100):
-        """Generate MP4 video from logged data."""
-        print(f"Generating video: {output_path}")
-        print(f"  FPS: {fps}, DPI: {dpi}")
-        
-        self.setup_figure()
-        
-        # Remove interactive controls for video
-        self.ax_slider.set_visible(False)
-        self.btn_play.ax.set_visible(False)
-        self.btn_pause.ax.set_visible(False)
-        self.btn_reset.ax.set_visible(False)
-        self.btn_faster.ax.set_visible(False)
-        self.btn_slower.ax.set_visible(False)
-        
-        def animate(frame_idx):
-            self.render_frame(frame_idx)
-            if frame_idx % 10 == 0:
-                print(f"  Rendering frame {frame_idx}/{self.num_frames}")
-            return []
-        
-        ani = animation.FuncAnimation(
-            self.fig, animate, frames=self.num_frames,
-            interval=1000/fps, blit=True
-        )
-        
-        # Save video
-        writer = animation.FFMpegWriter(fps=fps, bitrate=5000)
-        ani.save(output_path, writer=writer, dpi=dpi)
-        
-        print(f"\nVideo saved to: {output_path}")
-        print(f"  File size: {os.path.getsize(output_path) / 1024 / 1024:.2f} MB")
-        
-        plt.close(self.fig)
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Playback simulation logs with interactive viewer or video export'
+        description='Interactive playback viewer for simulation logs. For video generation, use visualization/renderer.py instead.'
     )
     parser.add_argument('log_file', help='Path to simulation log file (.npz)')
-    parser.add_argument('--video', '-v', metavar='OUTPUT', 
-                       help='Generate MP4 video to specified path')
-    parser.add_argument('--fps', type=int, default=30,
-                       help='Video frames per second (default: 30)')
-    parser.add_argument('--dpi', type=int, default=100,
-                       help='Video resolution DPI (default: 100)')
-    parser.add_argument('--interactive', '-i', action='store_true',
-                       help='Also show interactive viewer (when using --video)')
-    
+
     args = parser.parse_args()
-    
+
     if not os.path.exists(args.log_file):
         print(f"Error: Log file not found: {args.log_file}")
         sys.exit(1)
-        
+
     playback = SimulationPlayback(args.log_file)
-    
-    if args.video:
-        playback.generate_video(args.video, fps=args.fps, dpi=args.dpi)
-        if args.interactive:
-            playback.run_interactive()
-    else:
-        playback.run_interactive()
+    playback.run_interactive()
 
 
 if __name__ == "__main__":

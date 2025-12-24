@@ -35,20 +35,8 @@ class OccupancyGridManager:
         self._maze_half_block = block_physical_size / 2.0
         self._maze_inv_block_size = 1.0 / block_physical_size
 
-        # Calculate total free cells for coverage
-        # Use EXACT count instead of approximation to avoid 97% ceiling
-        # Old approximation: ground_truth_zeros * (scale_factor ** 2)
-        block_physical_size = self.env.cell_size / 2.0
-        scale_factor = block_physical_size / grid_resolution
-        ground_truth_zeros = np.sum(self.env.maze_grid == 0)
-        approx_free_cells = ground_truth_zeros * (scale_factor ** 2)
-
+        # Calculate total free cells for coverage using exact count
         self.total_free_cells = self._calculate_exact_free_cell_count()
-
-        print(f"Coverage calculation:")
-        print(f"  Approximate free cells: {approx_free_cells:.1f}")
-        print(f"  Exact free cells: {self.total_free_cells}")
-        print(f"  Difference: {abs(self.total_free_cells - approx_free_cells):.1f} cells ({abs(self.total_free_cells - approx_free_cells) / approx_free_cells * 100:.1f}%)")
 
         # FRONTIER DETECTION
         self._cached_frontiers = None
