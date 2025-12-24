@@ -6,7 +6,7 @@ Optimized for Numpy-based grids.
 import cv2
 import numpy as np
 import multiprocessing
-from multiprocessing import Pool
+from multiprocessing.pool import ThreadPool
 import os
 import sys
 import time
@@ -384,13 +384,11 @@ def render_single_frame(frame_idx, frames, metadata, output_size, max_steps):
 
 # === PARALLEL WORKERS ===
 
-def _worker_init(log_path, out_size, max_s):
-    global _frames, _meta, _size, _max
-    data = SimulationLogger.load(log_path) # Uses fast load
-    _frames = data['frames']
-    _meta = data['metadata']
-    _size = out_size
-    _max = max_s
+# Global variables for ThreadPool workers (shared across threads)
+_frames = None
+_meta = None
+_size = None
+_max = None
 
 def _worker_render(idx):
     return render_single_frame(idx, _frames, _meta, _size, _max)
@@ -408,9 +406,10 @@ def print_progress_bar(current, total, start_time, bar_length=40):
     print(f'\r  [{bar}] {current}/{total} ({progress*100:.0f}%) | {fps:.1f} fps | ETA: {eta:.0f}s    ', end='', flush=True)
 
 def render_video_from_log(log_filepath, num_workers=None):
-    """Render video from log file."""
+    """Render video from log file using ThreadPool for instant startup."""
     if num_workers is None: num_workers = 4
 
+    # 1. Load Data ONCE
     print(f"Loading: {log_filepath}")
     data = SimulationLogger.load(log_filepath)
     frames = data['frames']
@@ -421,16 +420,25 @@ def render_video_from_log(log_filepath, num_workers=None):
     print(f"  Environment: {metadata['env_config']['env_type']} {metadata['env_config']['maze_size']}")
     print(f"  Robots: {metadata['env_config']['num_robots']}")
 
+    # 2. Set Globals (Threads share these instantly)
+    global _frames, _meta, _size, _max
+    _frames = frames
+    _meta = metadata
+    _size = (1280, 720)
+    _max = max_steps
+
     out_path = log_filepath.replace('.npz', '.mp4')
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    writer = cv2.VideoWriter(out_path, fourcc, 30, (1280, 720))
+    writer = cv2.VideoWriter(out_path, fourcc, 30, _size)
 
     print(f"  Rendering to: {out_path}")
-    print(f"  Using {num_workers} parallel workers...")
+    print(f"  Using {num_workers} parallel threads...")
 
     start_time = time.time()
 
-    with Pool(num_workers, _worker_init, (log_filepath, (1280, 720), max_steps)) as pool:
+    # 3. Use ThreadPool instead of Pool
+    # No initializer needed because threads share memory
+    with ThreadPool(num_workers) as pool:
         for i, img in enumerate(pool.imap(_worker_render, range(len(frames)))):
             writer.write(img)
             if i % 10 == 0 or i == len(frames) - 1:

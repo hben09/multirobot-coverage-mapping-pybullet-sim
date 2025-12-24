@@ -189,21 +189,33 @@ class SimulationLogger:
             new_frame = rf.copy()
 
             # Handle Delta Encoding
-            if 'occupancy_grid_delta' in rf:
-                # Apply changes to Numpy array (FAST!)
-                for dx, dy, val in rf['occupancy_grid_delta']:
-                    # Convert absolute grid coords to array indices
-                    arr_x = dx - off_x
-                    arr_y = dy - off_y
+            if 'occupancy_grid_delta' in rf and len(rf['occupancy_grid_delta']) > 0:
+                # OPTIMIZATION: Vectorized Delta Application
+                # Convert list of lists to numpy array for bulk operation
+                deltas = np.array(rf['occupancy_grid_delta'], dtype=np.int32)
 
-                    # Bounds check
-                    if 0 <= arr_x < width and 0 <= arr_y < height:
-                        accumulated_grid[arr_y, arr_x] = val
+                # deltas shape is (N, 3) -> [x, y, value]
+                # Convert absolute coordinates to grid indices
+                arr_x = deltas[:, 0] - off_x
+                arr_y = deltas[:, 1] - off_y
+                vals = deltas[:, 2]
+
+                # Filter bounds (safety check)
+                valid_mask = (arr_x >= 0) & (arr_x < width) & (arr_y >= 0) & (arr_y < height)
+
+                if np.any(valid_mask):
+                    # Bulk update the grid (much faster than loop)
+                    accumulated_grid[arr_y[valid_mask], arr_x[valid_mask]] = vals[valid_mask]
 
                 # Store as tuple (grid, offset) to enable Fast Renderer path
                 new_frame['occupancy_grid'] = (accumulated_grid.copy(), (off_x, off_y))
 
                 # Remove delta to avoid confusion
+                del new_frame['occupancy_grid_delta']
+
+            elif 'occupancy_grid_delta' in rf:
+                # Empty delta, just store current grid state
+                new_frame['occupancy_grid'] = (accumulated_grid.copy(), (off_x, off_y))
                 del new_frame['occupancy_grid_delta']
 
             elif 'occupancy_grid' in rf:
