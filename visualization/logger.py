@@ -168,30 +168,48 @@ class SimulationLogger:
         num_frames = int(data['num_frames'])
         
         reconstructed_frames = []
-        accumulated_grid = {} # Keeps track of state across frames
-        
+
+        # Calculate grid dimensions using the same logic as NumbaOccupancyGrid
+        res = metadata['grid_resolution']
+        bounds = metadata['map_bounds']
+        inv_res = 1.0 / res
+        padding = 10  # Must match NumbaOccupancyGrid padding
+
+        # Calculate offset and dimensions (matching numba_accelerator.py:204-210)
+        off_x = int(bounds['x_min'] * inv_res) - padding
+        off_y = int(bounds['y_min'] * inv_res) - padding
+        width = int((bounds['x_max'] - bounds['x_min']) * inv_res) + 2 * padding
+        height = int((bounds['y_max'] - bounds['y_min']) * inv_res) + 2 * padding
+
+        # Initialize Numpy array for fast reconstruction
+        accumulated_grid = np.zeros((height, width), dtype=np.int8)
+
         for i, rf in enumerate(raw_frames):
             # Shallow copy to avoid modifying the original numpy array data
             new_frame = rf.copy()
-            
+
             # Handle Delta Encoding
             if 'occupancy_grid_delta' in rf:
-                # Apply changes to the accumulator
+                # Apply changes to Numpy array (FAST!)
                 for dx, dy, val in rf['occupancy_grid_delta']:
-                    accumulated_grid[(dx, dy)] = val
-                
-                # Store the FULL state in the frame for the viewer
-                # Note: We store as a dict with Tuple keys (int, int) -> int
-                # This is more efficient than the old string keys "x,y"
-                new_frame['occupancy_grid'] = accumulated_grid.copy()
-                
+                    # Convert absolute grid coords to array indices
+                    arr_x = dx - off_x
+                    arr_y = dy - off_y
+
+                    # Bounds check
+                    if 0 <= arr_x < width and 0 <= arr_y < height:
+                        accumulated_grid[arr_y, arr_x] = val
+
+                # Store as tuple (grid, offset) to enable Fast Renderer path
+                new_frame['occupancy_grid'] = (accumulated_grid.copy(), (off_x, off_y))
+
                 # Remove delta to avoid confusion
                 del new_frame['occupancy_grid_delta']
-                
+
             elif 'occupancy_grid' in rf:
-                # Already in correct format (tuple keys)
+                # Already in correct format
                 pass
-            
+
             reconstructed_frames.append(new_frame)
             
         return {
