@@ -227,14 +227,6 @@ class RealtimeVisualizer:
             ax.scatter(pos[0], pos[1], c=color, s=100, marker='^',
                       edgecolors='black', linewidths=1.5, zorder=5)
 
-            # Draw exploration direction arrow
-            arrow_len = 1.5
-            ax.arrow(pos[0], pos[1],
-                    robot.state.exploration_direction[0] * arrow_len,
-                    robot.state.exploration_direction[1] * arrow_len,
-                    head_width=0.3, head_length=0.2, fc=color, ec='black',
-                    alpha=0.7, zorder=6)
-
             # Draw goal marker
             if robot.state.goal is not None:
                 ax.scatter(robot.state.goal[0], robot.state.goal[1], c=color, s=150,

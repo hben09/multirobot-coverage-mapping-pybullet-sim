@@ -188,14 +188,7 @@ class SimulationPlayback:
             # Draw robot position
             ax_grid.scatter(pos[0], pos[1], c=color, s=100, marker='^',
                           edgecolors='black', linewidths=1.5, zorder=5)
-            
-            # Draw exploration direction
-            exp_dir = robot_state['exploration_direction']
-            arrow_len = 1.5
-            ax_grid.arrow(pos[0], pos[1], exp_dir[0] * arrow_len, exp_dir[1] * arrow_len,
-                         head_width=0.3, head_length=0.2, fc=color, ec='black',
-                         alpha=0.7, zorder=6)
-            
+
             # Draw goal
             if robot_state['goal']:
                 goal = robot_state['goal']

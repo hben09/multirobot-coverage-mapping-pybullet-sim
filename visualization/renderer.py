@@ -196,11 +196,6 @@ def render_occupancy_grid(frame, metadata, transform, panel_size):
         px = transform.world_to_pixel(pos[0], pos[1])
         draw_triangle(img, px, 12, -robot_state['orientation'], color)
 
-        # Exploration direction arrow
-        exp_dir = robot_state['exploration_direction']
-        arrow_len = transform.world_distance_to_pixels(1.5)
-        draw_arrow(img, px, exp_dir, arrow_len, color)
-
         # Goal marker
         if robot_state['goal']:
             g_px = transform.world_to_pixel(robot_state['goal'][0], robot_state['goal'][1])
