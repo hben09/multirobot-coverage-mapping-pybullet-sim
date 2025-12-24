@@ -133,7 +133,6 @@ class RobotAgent:
         # 2. If we have a goal, check for stuck condition
         if self.state.goal:
             if self.stuck_detector.is_stuck(self.state, self.driver):
-                print(f"Robot {self.state.id} is stuck! Abandoning goal and replanning...")
                 self.state.goal = None
                 self.state.path = []
                 self.stuck_detector.reset(self.state, self.driver)
@@ -321,7 +320,6 @@ class RobotAgent:
             True if path planning succeeded, False otherwise
         """
         if self.grid_manager is None or self.planner is None:
-            print(f"Robot {self.state.id}: Cannot plan path - no map access!")
             return False
 
         # Get current position

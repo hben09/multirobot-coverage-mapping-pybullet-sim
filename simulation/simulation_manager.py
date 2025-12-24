@@ -1,5 +1,6 @@
 import pybullet as p
 import time
+import os
 from collections import defaultdict
 
 from visualization.logger import SimulationLogger
@@ -94,6 +95,9 @@ class SimulationManager:
         self.logger = None
         self.env_config = initializer.get_env_config()
 
+        # Terminal display state
+        self._display_initialized = False
+
     def world_to_grid(self, x, y):
         return self.grid_manager.world_to_grid(x, y)
 
@@ -151,6 +155,68 @@ class SimulationManager:
     def invalidate_coverage_cache(self):
         self.grid_manager.invalidate_coverage_cache()
 
+    def _clear_terminal(self):
+        """Clear terminal screen using ANSI escape codes."""
+        # Move cursor to home position and clear screen
+        print('\033[H\033[2J', end='')
+
+    def _print_header(self):
+        """Print simulation header banner."""
+        print("=" * 70)
+        print(" " * 15 + "MULTI-ROBOT COVERAGE SIMULATION")
+        print("=" * 70)
+
+    def _print_status_dashboard(self, step, coverage, sps, status, perf_stats, robots_home_count=0):
+        """Print a clean, in-place updating status dashboard."""
+        if self._display_initialized:
+            self._clear_terminal()
+        else:
+            self._display_initialized = True
+
+        self._print_header()
+
+        # Main status
+        print(f"\nSIMULATION STATUS")
+        print(f"   Step:         {step:,}")
+        print(f"   Coverage:     {coverage:.1f}%")
+        print(f"   Speed:        {sps:.0f} steps/sec")
+        print(f"   Mode:         {status}")
+
+        if robots_home_count > 0:
+            print(f"   Robots Home:  {robots_home_count}/{len(self.robots)}")
+
+        # Robot assignment summary
+        robots_with_goals = sum(1 for r in self.robots if r.state.goal is not None)
+        robots_idle = len(self.robots) - robots_with_goals
+        robots_stuck = sum(1 for r in self.robots if r.state.goal_attempts > 0)
+        print(f"   Active:       {robots_with_goals}/{len(self.robots)} robots")
+        if robots_idle > 0:
+            print(f"   Idle:         {robots_idle} robots")
+        if robots_stuck > 0:
+            print(f"   Recovering:   {robots_stuck} robots (stuck/replanning)")
+
+        # Performance breakdown
+        total_time = sum(perf_stats.values())
+        if total_time > 0:
+            print(f"\nPERFORMANCE BREAKDOWN")
+            components = [
+                ("Sensing (LIDAR)", perf_stats['sensing']),
+                ("Global Planning", perf_stats['global_planning']),
+                ("Local Planning", perf_stats['local_planning']),
+                ("Visualization", perf_stats['visualization']),
+                ("Physics Engine", perf_stats['physics'])
+            ]
+
+            for name, time_spent in components:
+                pct = 100 * time_spent / total_time
+                bar_length = 30
+                filled = int(bar_length * pct / 100)
+                bar = '█' * filled + '░' * (bar_length - filled)
+                print(f"   {name:20s} [{bar}] {pct:5.1f}%")
+
+        print("\n" + "=" * 70)
+        print()  # Extra line for breathing room
+
 
     def run_simulation(self, log_path='./logs'):
         """
@@ -203,12 +269,16 @@ class SimulationManager:
 
         perf_stats = defaultdict(float)
 
+        # Track completion reason
+        completion_reason = "max_steps"
+
         while True:
             if max_steps is not None and step >= max_steps:
+                completion_reason = "max_steps"
                 break
 
             if returning_home and len(robots_home) == num_robots:
-                print("\n*** ALL ROBOTS RETURNED HOME ***")
+                completion_reason = "all_home"
                 break
 
             t0 = time.perf_counter()
@@ -239,9 +309,6 @@ class SimulationManager:
 
                     # Trigger return home when no accessible frontiers remain
                     if coverage > 1.0 and not has_accessible_frontiers:
-                        print(f"\n*** NO ACCESSIBLE FRONTIERS LEFT - RETURNING HOME ***")
-                        print(f"    (Total frontiers detected: {len(frontiers) if frontiers else 0})")
-                        print(f"    (Coverage: {coverage:.1f}%)")
                         returning_home = True
                         self.returning_home = True
                         self.trigger_return_home()
@@ -263,7 +330,6 @@ class SimulationManager:
                 if returning_home and robot.state.mode == 'RETURNING_HOME':
                     if robot.agent.check_if_home():
                         robots_home.add(robot.state.id)
-                        print(f"Robot {robot.state.id} arrived home!")
 
             perf_stats['local_planning'] += time.perf_counter() - t0
 
@@ -305,16 +371,11 @@ class SimulationManager:
                 coverage = self.calculate_coverage()
                 status = "RETURNING HOME" if returning_home else "EXPLORING"
 
-                print(f"Step {step} | Coverage: {coverage:.1f}% | {sps:.0f} steps/sec | Status: {status}")
-
-                total_time = sum(perf_stats.values())
-                if total_time > 0:
-                    print("  [Performance Breakdown]:")
-                    print(f"   - Sensing (LIDAR):   {100*perf_stats['sensing']/total_time:.1f}%")
-                    print(f"   - Global Planning:   {100*perf_stats['global_planning']/total_time:.1f}%")
-                    print(f"   - Local Planning:    {100*perf_stats['local_planning']/total_time:.1f}%")
-                    print(f"   - Visualization:     {100*perf_stats['visualization']/total_time:.1f}%")
-                    print(f"   - Physics Engine:    {100*perf_stats['physics']/total_time:.1f}%")
+                # Use clean dashboard display
+                self._print_status_dashboard(
+                    step, coverage, sps, status, perf_stats,
+                    robots_home_count=len(robots_home)
+                )
 
                 perf_stats.clear()
 
@@ -323,30 +384,45 @@ class SimulationManager:
 
             step += 1
 
+        # Clear screen and print final summary
+        self._clear_terminal()
+
         total_time = time.perf_counter() - start_time
-        print(f"\n*** SIMULATION COMPLETE ***")
-        print(f"  Total time: {total_time:.2f} seconds")
-        print(f"  Total steps: {step}")
-        print(f"  Average speed: {step/total_time:.0f} steps/second")
+        final_coverage = self.calculate_coverage()
+
+        print("=" * 70)
+        print(" " * 20 + "SIMULATION COMPLETE")
+        print("=" * 70)
+
+        # Completion reason
+        if completion_reason == "all_home":
+            print("\nAll robots returned home successfully")
+        elif completion_reason == "max_steps":
+            print(f"\nReached maximum steps limit ({max_steps:,})")
+
+        print(f"\nFINAL STATISTICS")
+        print(f"   Coverage:     {final_coverage:.1f}%")
+        print(f"   Free cells:   {int(final_coverage/100 * self.grid_manager.total_free_cells):,}/{int(self.grid_manager.total_free_cells):,}")
+        print(f"   Total steps:  {step:,}")
+        print(f"   Total time:   {total_time:.2f} seconds")
+        print(f"   Avg speed:    {step/total_time:.0f} steps/second")
+        print()
 
         if do_realtime:
             self.visualizer.update(step)
-            print("\nReal-time visualization complete.")
 
         if do_logging:
             self.logger.log_frame(step, self)
             log_filepath = self.logger.save()
 
-            print(f"\nTo replay this simulation interactively, run:")
-            print(f"  python playback.py {log_filepath}")
+            print(f"REPLAY")
+            print(f"   To replay this simulation, run:")
+            print(f"   python playback.py {log_filepath}")
+            print("\n" + "=" * 70)
 
             return log_filepath
 
-        print("\nSimulation complete!")
-        final_coverage = self.calculate_coverage()
-        print(f"Final Coverage: {final_coverage:.2f}%")
-        print(f"Explored Free Cells: {int(final_coverage/100 * self.grid_manager.total_free_cells)}/{int(self.grid_manager.total_free_cells)}")
-
+        print("=" * 70)
         return None
 
     def cleanup(self):

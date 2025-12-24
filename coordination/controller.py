@@ -103,14 +103,10 @@ class CoordinationController:
                     # Robot plans its own path to the goal
                     success = robot.agent.plan_path_to_goal(frontier['pos'])
 
-                    if success:
-                        print(f"Robot {robot_id}: Assigned goal (Bid: {bid_debug.get('utility', utility):.1f}, "
-                              f"Final: {utility:.1f})")
-                    else:
+                    if not success:
                         # Path planning failed - blacklist this frontier
                         robot.state.goal = None
                         robot.state.blacklisted_goals[frontier['grid_pos']] = step + 500
-                        print(f"Robot {robot_id}: Path failed to {frontier['grid_pos']}, blacklisted.")
                 else:
                     # Keep existing goal (no replanning needed)
                     robot.state.goal = frontier['pos']
@@ -136,9 +132,4 @@ class CoordinationController:
             robot.state.mode = 'RETURNING_HOME'
 
             # Robot plans its own path home
-            success = robot.agent.plan_path_home()
-
-            if success:
-                print(f"Robot {robot.state.id}: Returning home with {len(robot.state.path)} waypoints")
-            else:
-                print(f"Robot {robot.state.id}: Failed to plan path home")
+            robot.agent.plan_path_home()
