@@ -4,6 +4,7 @@ import os
 from collections import defaultdict
 
 from visualization.logger import SimulationLogger
+from visualization.console_dashboard import ConsoleDashboard
 from navigation.pathfinding import NumbaAStarHelper
 from mapping.grid_manager import OccupancyGridManager
 from coordination.controller import CoordinationController
@@ -94,8 +95,8 @@ class SimulationManager:
         self.logger = None
         self.env_config = initializer.get_env_config()
 
-        # Terminal display state
-        self._display_initialized = False
+        # Console dashboard for terminal display
+        self.dashboard = ConsoleDashboard(self.robots)
 
     def world_to_grid(self, x, y):
         return self.grid_manager.world_to_grid(x, y)
@@ -153,68 +154,6 @@ class SimulationManager:
 
     def invalidate_coverage_cache(self):
         self.grid_manager.invalidate_coverage_cache()
-
-    def _clear_terminal(self):
-        """Clear terminal screen using ANSI escape codes."""
-        # Move cursor to home position and clear screen
-        print('\033[H\033[2J', end='')
-
-    def _print_header(self):
-        """Print simulation header banner."""
-        print("=" * 70)
-        print(" " * 15 + "MULTI-ROBOT COVERAGE SIMULATION")
-        print("=" * 70)
-
-    def _print_status_dashboard(self, step, coverage, sps, status, perf_stats, robots_home_count=0):
-        """Print a clean, in-place updating status dashboard."""
-        if self._display_initialized:
-            self._clear_terminal()
-        else:
-            self._display_initialized = True
-
-        self._print_header()
-
-        # Main status
-        print(f"\nSIMULATION STATUS")
-        print(f"   Step:         {step:,}")
-        print(f"   Coverage:     {coverage:.1f}%")
-        print(f"   Speed:        {sps:.0f} steps/sec")
-        print(f"   Mode:         {status}")
-
-        if robots_home_count > 0:
-            print(f"   Robots Home:  {robots_home_count}/{len(self.robots)}")
-
-        # Robot assignment summary
-        robots_with_goals = sum(1 for r in self.robots if r.state.goal is not None)
-        robots_idle = len(self.robots) - robots_with_goals
-        robots_stuck = sum(1 for r in self.robots if r.state.goal_attempts > 0)
-        print(f"   Active:       {robots_with_goals}/{len(self.robots)} robots")
-        if robots_idle > 0:
-            print(f"   Idle:         {robots_idle} robots")
-        if robots_stuck > 0:
-            print(f"   Recovering:   {robots_stuck} robots (stuck/replanning)")
-
-        # Performance breakdown
-        total_time = sum(perf_stats.values())
-        if total_time > 0:
-            print(f"\nPERFORMANCE BREAKDOWN")
-            components = [
-                ("Sensing (LIDAR)", perf_stats['sensing']),
-                ("Global Planning", perf_stats['global_planning']),
-                ("Local Planning", perf_stats['local_planning']),
-                ("Visualization", perf_stats['visualization']),
-                ("Physics Engine", perf_stats['physics'])
-            ]
-
-            for name, time_spent in components:
-                pct = 100 * time_spent / total_time
-                bar_length = 30
-                filled = int(bar_length * pct / 100)
-                bar = '█' * filled + '░' * (bar_length - filled)
-                print(f"   {name:20s} [{bar}] {pct:5.1f}%")
-
-        print("\n" + "=" * 70)
-        print()  # Extra line for breathing room
 
 
     def run_simulation(self, log_path='./logs'):
@@ -370,7 +309,7 @@ class SimulationManager:
                 status = "RETURNING HOME" if returning_home else "EXPLORING"
 
                 # Use clean dashboard display
-                self._print_status_dashboard(
+                self.dashboard.print_status(
                     step, coverage, sps, status, perf_stats,
                     robots_home_count=len(robots_home)
                 )
@@ -382,29 +321,18 @@ class SimulationManager:
 
             step += 1
 
-        # Clear screen and print final summary
-        self._clear_terminal()
-
+        # Print final summary using dashboard
         total_time = time.perf_counter() - start_time
         final_coverage = self.calculate_coverage()
 
-        print("=" * 70)
-        print(" " * 20 + "SIMULATION COMPLETE")
-        print("=" * 70)
-
-        # Completion reason
-        if completion_reason == "all_home":
-            print("\nAll robots returned home successfully")
-        elif completion_reason == "max_steps":
-            print(f"\nReached maximum steps limit ({max_steps:,})")
-
-        print(f"\nFINAL STATISTICS")
-        print(f"   Coverage:     {final_coverage:.1f}%")
-        print(f"   Free cells:   {int(final_coverage/100 * self.grid_manager.total_free_cells):,}/{int(self.grid_manager.total_free_cells):,}")
-        print(f"   Total steps:  {step:,}")
-        print(f"   Total time:   {total_time:.2f} seconds")
-        print(f"   Avg speed:    {step/total_time:.0f} steps/second")
-        print()
+        self.dashboard.print_completion_summary(
+            completion_reason,
+            max_steps,
+            final_coverage,
+            self.grid_manager.total_free_cells,
+            step,
+            total_time
+        )
 
         if do_realtime:
             self.visualizer.update(step)
@@ -413,14 +341,11 @@ class SimulationManager:
             self.logger.log_frame(step, self)
             log_filepath = self.logger.save()
 
-            print(f"REPLAY")
-            print(f"   To replay this simulation, run:")
-            print(f"   python playback.py {log_filepath}")
-            print("\n" + "=" * 70)
+            self.dashboard.print_replay_instructions(log_filepath)
 
             return log_filepath
 
-        print("=" * 70)
+        self.dashboard.print_final_separator()
         return None
 
     def cleanup(self):
