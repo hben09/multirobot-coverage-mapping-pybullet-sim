@@ -46,7 +46,6 @@ def load_config(config_path="config/default.yaml") -> SimulationConfig:
             physics=PhysicsConfig(**raw_config['physics']),
             planning=PlanningConfig(
                 grid_resolution=raw_config['planning']['grid_resolution'],
-                return_home_coverage=raw_config['planning']['return_home_coverage'],
                 utility_weights=UtilityWeightsConfig(**raw_config['planning']['utility_weights']),
                 coordination=CoordinationConfig(**raw_config['planning']['coordination'])
             ),

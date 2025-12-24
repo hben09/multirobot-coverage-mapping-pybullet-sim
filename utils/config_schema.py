@@ -70,7 +70,6 @@ class CoordinationConfig:
 class PlanningConfig:
     """Planning algorithm configuration."""
     grid_resolution: float
-    return_home_coverage: float
     utility_weights: UtilityWeightsConfig
     coordination: CoordinationConfig
 

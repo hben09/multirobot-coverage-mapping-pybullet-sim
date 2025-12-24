@@ -86,8 +86,7 @@ class SimulationManager:
         # Real-time visualization
         self.visualizer = RealtimeVisualizer(self)
 
-        # Return-to-home settings
-        self.return_home_coverage = self.plan_cfg.return_home_coverage
+        # Return-to-home state (triggered when no frontiers remain)
         self.returning_home = False
         self.robots_home = set()
 
@@ -197,7 +196,6 @@ class SimulationManager:
         num_robots = len(robots)
         returning_home = self.returning_home
         robots_home = self.robots_home
-        return_home_coverage = self.return_home_coverage
 
         start_time = time.perf_counter()
         last_report_time = start_time
@@ -239,10 +237,7 @@ class SimulationManager:
                             if has_accessible_frontiers:
                                 break
 
-                    # Only trigger return home if:
-                    # 1. We have explored enough (coverage > 1%) AND
-                    # 2. No accessible frontiers remain
-                    # This prevents returning home immediately at start before any exploration
+                    # Trigger return home when no accessible frontiers remain
                     if coverage > 1.0 and not has_accessible_frontiers:
                         print(f"\n*** NO ACCESSIBLE FRONTIERS LEFT - RETURNING HOME ***")
                         print(f"    (Total frontiers detected: {len(frontiers) if frontiers else 0})")
