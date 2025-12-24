@@ -1,12 +1,12 @@
 environment:
-  maze_size: 16
+  maze_size: 10
   cell_size: 8.0
-  type: "corridor_rooms"  # options: maze, blank_box, cave, tunnel, rooms, sewer, corridor_rooms
+  type: "maze"  # options: maze, blank_box, cave, tunnel, rooms, sewer, corridor_rooms
   seed: null              # null for random, or integer
   safety_margin: 1        # Grid cells to inflate obstacles
 
 robots:
-  count: 6
+  count: 3
   spacing: 1.5            # Spacing between robots at spawn
   radius: 0.25
   mass: 1.0
