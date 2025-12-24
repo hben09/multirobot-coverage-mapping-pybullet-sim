@@ -1,10 +1,6 @@
 """
 OpenCV-based parallel video renderer for simulation logs.
-
-Usage:
-    from video_renderer import render_video_from_log
-    render_video_from_log('logs/sim_log_xxx.npz')
-    render_video_from_log('logs/sim_log_xxx.npz', num_workers=4)
+Optimized for Numpy-based grids.
 """
 
 import cv2
@@ -23,236 +19,210 @@ except ImportError:
 
 
 # === COLOR DEFINITIONS ===
-
 COLORS_BGR = {
-    'red': (0, 0, 255),
-    'green': (0, 255, 0),
-    'blue': (255, 0, 0),
-    'yellow': (0, 255, 255),
-    'magenta': (255, 0, 255),
-    'cyan': (255, 255, 0),
-    'orange': (0, 165, 255),
-    'purple': (128, 0, 128),
-    'gray': (128, 128, 128),
-    'pink': (203, 192, 255),
-    'darkgreen': (0, 100, 0),
-    'brown': (42, 42, 165),
-    'navy': (128, 0, 0),
-    'lime': (0, 255, 0),
-    'salmon': (114, 128, 250),
+    'red': (0, 0, 255), 'green': (0, 255, 0), 'blue': (255, 0, 0),
+    'yellow': (0, 255, 255), 'magenta': (255, 0, 255), 'cyan': (255, 255, 0),
+    'orange': (0, 165, 255), 'purple': (128, 0, 128), 'gray': (128, 128, 128),
+    'pink': (203, 192, 255), 'darkgreen': (0, 100, 0), 'brown': (42, 42, 165),
+    'navy': (128, 0, 0), 'lime': (0, 255, 0), 'salmon': (114, 128, 250),
     'teal': (128, 128, 0),
 }
 COLOR_LIST = list(COLORS_BGR.keys())
 
-COLOR_UNEXPLORED = (180, 180, 180)
+COLOR_UNEXPLORED = (240, 240, 240) # Match background
 COLOR_FREE = (255, 255, 255)
 COLOR_OBSTACLE = (0, 0, 0)
-COLOR_FRONTIER = (0, 255, 255)
 COLOR_BACKGROUND = (240, 240, 240)
 
 
-# === COORDINATE TRANSFORMS ===
-
 class CoordinateTransform:
     """Handles world-to-pixel coordinate transformations."""
-
     def __init__(self, bounds, resolution, image_size, margin=50):
         self.bounds = bounds
         self.resolution = resolution
         self.image_width, self.image_height = image_size
         self.margin = margin
 
-        # 1. Compute scale to fit world bounds
         world_width = bounds['x_max'] - bounds['x_min']
         world_height = bounds['y_max'] - bounds['y_min']
-
         available_width = self.image_width - 2 * margin
         available_height = self.image_height - 2 * margin
 
         self.scale = min(available_width / world_width, available_height / world_height)
-
-        # 2. Calculate center offset
         self.offset_x = margin + (available_width - world_width * self.scale) / 2
         self.offset_y = margin + (available_height - world_height * self.scale) / 2
 
     def world_to_pixel(self, x, y):
-        """Convert world coordinates to pixel coordinates."""
         px = int(self.offset_x + (x - self.bounds['x_min']) * self.scale)
         py = int(self.image_height - self.offset_y - (y - self.bounds['y_min']) * self.scale)
         return (px, py)
 
-    def grid_to_world(self, grid_x, grid_y):
-        """Convert grid cell indices to world coordinates."""
-        x = self.bounds['x_min'] + (grid_x + 0.5) * self.resolution
-        y = self.bounds['y_min'] + (grid_y + 0.5) * self.resolution
-        return (x, y)
-
-    def grid_to_pixel(self, grid_x, grid_y):
-        """Convert grid cell to pixel coordinates."""
-        wx, wy = self.grid_to_world(grid_x, grid_y)
-        return self.world_to_pixel(wx, wy)
+    def grid_to_world_raw(self, gx, gy):
+        # Convert raw absolute grid index to world
+        x = self.bounds['x_min'] + (gx + 0.5) * self.resolution
+        y = self.bounds['y_min'] + (gy + 0.5) * self.resolution
+        return x, y
 
     def world_distance_to_pixels(self, distance):
-        """Convert world distance to pixels."""
         return int(distance * self.scale)
 
 
-# === DRAWING PRIMITIVES ===
-
-def draw_triangle(img, center, size, angle, color, thickness=-1):
-    """Draw triangle robot marker."""
+# === DRAWING PRIMITIVES (Keep existing) ===
+def draw_triangle(img, center, size, angle, color):
     cx, cy = center
-
-    # 1. Define triangle points
-    pts = np.array([
-        [size, 0],
-        [-size * 0.6, -size * 0.5],
-        [-size * 0.6, size * 0.5],
-    ], dtype=np.float32)
-
-    # 2. Rotate
+    pts = np.array([[size, 0], [-size * 0.6, -size * 0.5], [-size * 0.6, size * 0.5]], dtype=np.float32)
     cos_a, sin_a = np.cos(angle), np.sin(angle)
     rot = np.array([[cos_a, -sin_a], [sin_a, cos_a]])
     pts = pts @ rot.T
-
-    # 3. Translate
     pts = pts + np.array([cx, cy])
     pts = pts.astype(np.int32)
-
     cv2.fillPoly(img, [pts], color)
-    cv2.polylines(img, [pts], True, (0, 0, 0), max(1, thickness // 4))
+    cv2.polylines(img, [pts], True, (0, 0, 0), 1)
 
-
-def draw_arrow(img, start, direction, length, color, thickness=2):
-    """Draw arrow for exploration direction."""
+def draw_arrow(img, start, direction, length, color):
     sx, sy = start
     dx, dy = direction
-
-    # 1. Normalize direction
     norm = np.sqrt(dx*dx + dy*dy)
-    if norm < 1e-6:
-        return
+    if norm < 1e-6: return
     dx, dy = dx / norm, dy / norm
-
-    # 2. Calculate endpoint
     ex, ey = int(sx + dx * length), int(sy - dy * length)
-    sx, sy = int(sx), int(sy)
+    cv2.arrowedLine(img, (int(sx), int(sy)), (ex, ey), color, 2, tipLength=0.3)
 
-    cv2.arrowedLine(img, (sx, sy), (ex, ey), color, thickness, tipLength=0.3)
-
-
-def draw_x_marker(img, center, size, color, thickness=2):
-    """Draw X marker for goals."""
+def draw_x_marker(img, center, size, color):
     cx, cy = center
     s = size
-
-    # 1. White outline
-    cv2.line(img, (cx - s, cy - s), (cx + s, cy + s), (255, 255, 255), thickness + 2)
-    cv2.line(img, (cx - s, cy + s), (cx + s, cy - s), (255, 255, 255), thickness + 2)
-
-    # 2. Colored X
-    cv2.line(img, (cx - s, cy - s), (cx + s, cy + s), color, thickness)
-    cv2.line(img, (cx - s, cy + s), (cx + s, cy - s), color, thickness)
+    cv2.line(img, (cx - s, cy - s), (cx + s, cy + s), (255, 255, 255), 4)
+    cv2.line(img, (cx - s, cy + s), (cx + s, cy - s), (255, 255, 255), 4)
+    cv2.line(img, (cx - s, cy - s), (cx + s, cy + s), color, 2)
+    cv2.line(img, (cx - s, cy + s), (cx + s, cy - s), color, 2)
 
 
-def draw_text_with_background(img, text, pos, font_scale=0.5, color=(0, 0, 0),
-                              bg_color=(255, 255, 255), thickness=1, padding=5):
-    """Draw text with background rectangle."""
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    (text_width, text_height), baseline = cv2.getTextSize(text, font, font_scale, thickness)
-
-    x, y = pos
-    cv2.rectangle(img,
-                  (x - padding, y - text_height - padding),
-                  (x + text_width + padding, y + baseline + padding),
-                  bg_color, -1)
-    cv2.rectangle(img,
-                  (x - padding, y - text_height - padding),
-                  (x + text_width + padding, y + baseline + padding),
-                  (0, 0, 0), 1)
-    cv2.putText(img, text, (x, y), font, font_scale, color, thickness, cv2.LINE_AA)
-
-
-# === PANEL RENDERERS ===
+# === FAST RENDERER ===
 
 def render_occupancy_grid(frame, metadata, transform, panel_size):
-    """Render occupancy grid panel."""
+    """Render occupancy grid panel using fast image resizing."""
     width, height = panel_size
     img = np.full((height, width, 3), COLOR_BACKGROUND, dtype=np.uint8)
 
-    resolution = metadata['grid_resolution']
-    cell_pixel_size = max(1, int(resolution * transform.scale))
+    # 1. FAST GRID RENDERING
+    if isinstance(frame['occupancy_grid'], tuple):
+        # Optimized path: Numpy array
+        grid_arr, (off_x, off_y) = frame['occupancy_grid']
+        gh, gw = grid_arr.shape
 
-    # 1. Draw occupancy grid cells
-    for cell_key, value in frame['occupancy_grid'].items():
-        gx, gy = cell_key
-        px, py = transform.grid_to_pixel(gx, gy)
+        # Create colored grid image
+        # Initialize with background color
+        grid_img = np.full((gh, gw, 3), COLOR_UNEXPLORED, dtype=np.uint8)
 
-        half_size = cell_pixel_size // 2
-        pt1 = (px - half_size, py - half_size)
-        pt2 = (px + half_size, py + half_size)
+        # Vectorized coloring
+        grid_img[grid_arr == 1] = COLOR_FREE
+        grid_img[grid_arr == 2] = COLOR_OBSTACLE
 
-        if value == 1:
-            cv2.rectangle(img, pt1, pt2, COLOR_FREE, -1)
-        elif value == 2:
-            cv2.rectangle(img, pt1, pt2, COLOR_OBSTACLE, -1)
+        # Calculate target pixel position
+        # Grid bottom-left in world coords
+        wx0, wy0 = transform.grid_to_world_raw(off_x, off_y)
+        # Grid top-right in world coords
+        wx1, wy1 = transform.grid_to_world_raw(off_x + gw, off_y + gh)
 
-    # 2. Draw robot information
+        # Convert to pixels
+        # Note: Y-axis is flipped (0 is top in pixels, bottom in world)
+        px0, py1_pixel = transform.world_to_pixel(wx0, wy0) # Bottom-left world -> Bottom-left pixel
+        px1, py0_pixel = transform.world_to_pixel(wx1, wy1) # Top-right world -> Top-right pixel
+
+        # Target rectangle on canvas
+        target_x = px0
+        target_y = py0_pixel
+        target_w = px1 - px0
+        target_h = py1_pixel - py0_pixel
+
+        if target_w > 0 and target_h > 0:
+            # Flip grid image vertically because world Y goes up but image index Y goes down
+            grid_img_flipped = cv2.flip(grid_img, 0)
+
+            # Resize using Nearest Neighbor (fast & keeps sharp edges)
+            resized_grid = cv2.resize(grid_img_flipped, (target_w, target_h), interpolation=cv2.INTER_NEAREST)
+
+            # Blit onto canvas (handling boundary clipping)
+            y_start = max(0, target_y)
+            y_end = min(height, target_y + target_h)
+            x_start = max(0, target_x)
+            x_end = min(width, target_x + target_w)
+
+            # Crop source if target is partially out of bounds
+            src_y_start = max(0, -target_y)
+            src_y_end = src_y_start + (y_end - y_start)
+            src_x_start = max(0, -target_x)
+            src_x_end = src_x_start + (x_end - x_start)
+
+            if (y_end > y_start) and (x_end > x_start):
+                img[y_start:y_end, x_start:x_end] = resized_grid[src_y_start:src_y_end, src_x_start:src_x_end]
+
+    else:
+        # Slow fallback for legacy dicts
+        for cell_key, value in frame['occupancy_grid'].items():
+            gx, gy = cell_key
+            px, py = transform.world_to_pixel(*transform.grid_to_world_raw(gx, gy))
+            s = max(1, int(transform.scale * metadata['grid_resolution'])) // 2
+            color = COLOR_FREE if value == 1 else COLOR_OBSTACLE
+            cv2.rectangle(img, (px-s, py-s), (px+s, py+s), color, -1)
+
+    # 2. Draw frontiers on main map
+    if frame['frontiers']:
+        for frontier in frame['frontiers']:
+            px, py = transform.world_to_pixel(frontier['pos'][0], frontier['pos'][1])
+            cv2.circle(img, (px, py), 6, (0, 255, 255), -1)
+            cv2.circle(img, (px, py), 6, (0, 0, 255), 2)
+
+    # 3. Draw robot information
     for i, robot_state in enumerate(frame['robots']):
-        color_name = COLOR_LIST[i % len(COLOR_LIST)]
-        color = COLORS_BGR[color_name]
-        pos = robot_state['position']
+        color = COLORS_BGR[COLOR_LIST[i % len(COLOR_LIST)]]
 
         # Trajectory
-        if robot_state['trajectory'] and len(robot_state['trajectory']) > 1:
-            traj_pixels = [transform.world_to_pixel(p[0], p[1]) for p in robot_state['trajectory']]
-            traj_pixels = np.array(traj_pixels, dtype=np.int32)
-            cv2.polylines(img, [traj_pixels], False, color, 1, cv2.LINE_AA)
+        if len(robot_state['trajectory']) > 1:
+            pts = [transform.world_to_pixel(p[0], p[1]) for p in robot_state['trajectory']]
+            cv2.polylines(img, [np.array(pts)], False, color, 1, cv2.LINE_AA)
 
         # Planned path
         if robot_state['path'] and len(robot_state['path']) > 1:
-            for j in range(len(robot_state['path']) - 1):
-                p1 = robot_state['path'][j]
-                p2 = robot_state['path'][j + 1]
-                px1, py1 = transform.grid_to_pixel(p1[0], p1[1])
-                px2, py2 = transform.grid_to_pixel(p2[0], p2[1])
-                cv2.line(img, (px1, py1), (px2, py2), color, 2, cv2.LINE_AA)
+            path_pts = []
+            for p in robot_state['path']:
+                wx, wy = transform.grid_to_world_raw(p[0], p[1])
+                px, py = transform.world_to_pixel(wx, wy)
+                path_pts.append([px, py])
+            cv2.polylines(img, [np.array(path_pts)], False, color, 2, cv2.LINE_AA)
 
-        # Robot marker
-        robot_px = transform.world_to_pixel(pos[0], pos[1])
-        orientation = robot_state['orientation']
-        draw_triangle(img, robot_px, 12, -orientation, color)
+        # Robot position
+        pos = robot_state['position']
+        px = transform.world_to_pixel(pos[0], pos[1])
+        draw_triangle(img, px, 12, -robot_state['orientation'], color)
 
         # Exploration direction arrow
         exp_dir = robot_state['exploration_direction']
         arrow_len = transform.world_distance_to_pixels(1.5)
-        draw_arrow(img, robot_px, exp_dir, arrow_len, color, 2)
+        draw_arrow(img, px, exp_dir, arrow_len, color)
 
         # Goal marker
         if robot_state['goal']:
-            goal = robot_state['goal']
-            goal_px = transform.world_to_pixel(goal[0], goal[1])
-            draw_x_marker(img, goal_px, 8, color, 2)
+            g_px = transform.world_to_pixel(robot_state['goal'][0], robot_state['goal'][1])
+            draw_x_marker(img, g_px, 8, color)
 
         # Home position
-        home = metadata['robot_home_positions'][i]
-        home_px = transform.world_to_pixel(home[0], home[1])
-        cv2.rectangle(img,
-                      (home_px[0] - 6, home_px[1] - 6),
-                      (home_px[0] + 6, home_px[1] + 6),
-                      color, -1)
-        cv2.rectangle(img,
-                      (home_px[0] - 6, home_px[1] - 6),
-                      (home_px[0] + 6, home_px[1] + 6),
-                      (255, 255, 255), 1)
+        if i < len(metadata['robot_home_positions']):
+            home = metadata['robot_home_positions'][i]
+            home_px = transform.world_to_pixel(home[0], home[1])
+            cv2.rectangle(img, (home_px[0] - 6, home_px[1] - 6), (home_px[0] + 6, home_px[1] + 6), color, -1)
+            cv2.rectangle(img, (home_px[0] - 6, home_px[1] - 6), (home_px[0] + 6, home_px[1] + 6), (255, 255, 255), 2)
 
-    # 3. Draw title and info
-    status = "RETURNING HOME" if frame['returning_home'] else "EXPLORING"
+    # 4. Draw title and info
+    status = "RETURNING HOME" if frame.get('returning_home', False) else "EXPLORING"
     title = f"Occupancy Grid | Step {frame['step']} | {status}"
-    cv2.putText(img, title, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1, cv2.LINE_AA)
+    cv2.putText(img, title, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2, cv2.LINE_AA)
 
-    draw_text_with_background(img, f"Coverage: {frame['coverage']:.1f}%",
-                              (10, 50), font_scale=0.5, bg_color=(200, 220, 255))
+    # Coverage info with background
+    coverage_text = f"Coverage: {frame['coverage']:.1f}%"
+    cv2.rectangle(img, (8, 35), (180, 65), (200, 220, 255), -1)
+    cv2.rectangle(img, (8, 35), (180, 65), (0, 0, 0), 1)
+    cv2.putText(img, coverage_text, (12, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
 
     return img
 
@@ -262,126 +232,98 @@ def render_frontier_map(frame, metadata, transform, panel_size):
     width, height = panel_size
     img = np.full((height, width, 3), COLOR_BACKGROUND, dtype=np.uint8)
 
-    resolution = metadata['grid_resolution']
-    cell_pixel_size = max(1, int(resolution * transform.scale))
-
-    # 1. Draw explored cells
-    for cell in frame['explored_cells']:
-        cell_tuple = tuple(cell)
-        is_free = False
-
-        if frame['occupancy_grid'].get(cell_tuple) == 1:
-            is_free = True
-        elif frame['occupancy_grid'].get(f"{cell[0]},{cell[1]}") == 1:
-            is_free = True
-
-        if is_free:
-            px, py = transform.grid_to_pixel(cell[0], cell[1])
-            half_size = cell_pixel_size // 2
-            cv2.rectangle(img,
-                          (px - half_size, py - half_size),
-                          (px + half_size, py + half_size),
-                          (255, 200, 150), -1)
-
-    # 2. Draw obstacles
-    for cell in frame['obstacle_cells']:
-        px, py = transform.grid_to_pixel(cell[0], cell[1])
-        half_size = cell_pixel_size // 2
-        cv2.rectangle(img,
-                      (px - half_size, py - half_size),
-                      (px + half_size, py + half_size),
-                      COLOR_OBSTACLE, -1)
-
-    # 3. Draw frontiers
+    # Simply draw dots for frontiers - fast enough
     if frame['frontiers']:
         for frontier in frame['frontiers']:
-            pos = frontier['pos']
-            px, py = transform.world_to_pixel(pos[0], pos[1])
-            cv2.circle(img, (px, py), 8, COLOR_FRONTIER, -1)
-            cv2.circle(img, (px, py), 8, (0, 0, 255), 2)
+            px, py = transform.world_to_pixel(frontier['pos'][0], frontier['pos'][1])
+            cv2.circle(img, (px, py), 5, (0, 255, 255), -1)
+            cv2.circle(img, (px, py), 5, (0, 0, 255), 1)
 
-    # 4. Draw robots
-    for i, robot_state in enumerate(frame['robots']):
-        color_name = COLOR_LIST[i % len(COLOR_LIST)]
-        color = COLORS_BGR[color_name]
-        pos = robot_state['position']
-        robot_px = transform.world_to_pixel(pos[0], pos[1])
-        draw_triangle(img, robot_px, 15, -robot_state['orientation'], color)
+    # Draw robots
+    for i, robot in enumerate(frame['robots']):
+        px, py = transform.world_to_pixel(robot['position'][0], robot['position'][1])
+        color = COLORS_BGR[COLOR_LIST[i % len(COLOR_LIST)]]
+        draw_triangle(img, (px, py), 10, -robot['orientation'], color)
 
-    # 5. Draw title
-    num_frontiers = len(frame['frontiers']) if frame['frontiers'] else 0
-    title = f"Frontier Detection ({num_frontiers} targets)"
-    cv2.putText(img, title, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1, cv2.LINE_AA)
-
+    cv2.putText(img, f"Frontiers: {len(frame['frontiers'])}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,0), 1)
     return img
 
 
-def render_coverage_graph(frames, current_frame_idx, panel_size, max_steps=None):
-    """Render coverage progress graph."""
+def render_coverage_graph(frames, current_frame_idx, panel_size, max_steps):
+    """Coverage progress graph with labels and grid."""
     width, height = panel_size
     img = np.full((height, width, 3), (255, 255, 255), dtype=np.uint8)
 
-    # 1. Define graph margins
+    # Margins for labels
     margin_left = 60
     margin_right = 20
     margin_top = 40
     margin_bottom = 40
 
-    graph_width = width - margin_left - margin_right
-    graph_height = height - margin_top - margin_bottom
+    gw = width - margin_left - margin_right
+    gh = height - margin_top - margin_bottom
 
-    # 2. Draw axes
+    # Origin and axes
     origin = (margin_left, height - margin_bottom)
     x_end = (width - margin_right, height - margin_bottom)
     y_end = (margin_left, margin_top)
 
+    # Draw axes
     cv2.line(img, origin, x_end, (0, 0, 0), 2)
     cv2.line(img, origin, y_end, (0, 0, 0), 2)
 
-    # 3. Get data up to current frame
+    # Get data up to current frame
     steps = [f['step'] for f in frames[:current_frame_idx + 1]]
     coverages = [f['coverage'] for f in frames[:current_frame_idx + 1]]
 
     if not steps:
         return img
 
-    # 4. Calculate scale factors
-    if max_steps is None:
-        max_steps = max(2000, frames[-1]['step'])
+    # Calculate scale
+    max_s = max(100, max_steps)
+    x_scale = gw / max_s
+    y_scale = gh / 100.0
 
-    x_scale = graph_width / max_steps
-    y_scale = graph_height / 100
-
-    # 5. Draw grid lines
+    # Draw horizontal grid lines and Y-axis labels
     for pct in [25, 50, 75, 100]:
         y = int(origin[1] - pct * y_scale)
-        cv2.line(img, (margin_left, y), (width - margin_right, y), (200, 200, 200), 1)
+        cv2.line(img, (margin_left, y), (width - margin_right, y), (220, 220, 220), 1)
         cv2.putText(img, f"{pct}%", (5, y + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
 
-    # 6. Draw step markers
-    step_interval = max(500, (max_steps // 4 // 500) * 500)
-    for s in range(0, max_steps + 1, step_interval):
+    # Draw vertical grid lines and X-axis labels
+    step_interval = max(500, (max_s // 4 // 500) * 500)
+    for s in range(0, max_s + 1, step_interval):
         x = int(margin_left + s * x_scale)
         cv2.line(img, (x, height - margin_bottom), (x, height - margin_bottom + 5), (0, 0, 0), 1)
         cv2.putText(img, str(s), (x - 15, height - margin_bottom + 20),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 0, 0), 1)
 
-    # 7. Plot coverage line and fill
+    # Plot coverage line with fill
     if len(steps) > 1:
+        # Downsample for performance (plot every 5th point)
+        step_indices = range(0, len(steps), max(1, len(steps) // 200))
         points = []
-        for i in range(len(steps)):
+        for i in step_indices:
             x = int(margin_left + steps[i] * x_scale)
             y = int(origin[1] - coverages[i] * y_scale)
             points.append([x, y])
 
+        # Add final point if not included
+        if step_indices[-1] != len(steps) - 1:
+            x = int(margin_left + steps[-1] * x_scale)
+            y = int(origin[1] - coverages[-1] * y_scale)
+            points.append([x, y])
+
         points = np.array(points, dtype=np.int32)
 
+        # Fill under the line
         fill_points = np.vstack([
             points,
             [[points[-1, 0], origin[1]], [points[0, 0], origin[1]]]
         ])
-        cv2.fillPoly(img, [fill_points], (255, 200, 200))
+        cv2.fillPoly(img, [fill_points], (200, 220, 255))
 
+        # Draw the line
         cv2.polylines(img, [points], False, (255, 0, 0), 2, cv2.LINE_AA)
 
         # Current value indicator
@@ -390,83 +332,71 @@ def render_coverage_graph(frames, current_frame_idx, panel_size, max_steps=None)
         cv2.line(img, (margin_left, y_current), (width - margin_right, y_current),
                  (0, 0, 255), 1, cv2.LINE_AA)
 
-    # 8. Draw labels
+    # Draw axis labels
     cv2.putText(img, "Coverage Progress", (width // 2 - 80, 25),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1, cv2.LINE_AA)
     cv2.putText(img, "Simulation Step", (width // 2 - 50, height - 5),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
-    cv2.putText(img, "Coverage", (5, height // 2),
+
+    # Y-axis label (rotated text simulated with vertical text)
+    cv2.putText(img, "Coverage (%)", (5, height // 2),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
 
     return img
 
 
-# === FRAME COMPOSITION ===
-
 def render_single_frame(frame_idx, frames, metadata, output_size, max_steps):
-    """Render single frame for parallel processing."""
+    """Composite frame renderer."""
     frame = frames[frame_idx]
+    w, h = output_size
 
-    # 1. Calculate layout dimensions
-    width, height = output_size
-    panel_width = width // 2
-    top_panel_height = int(height * 0.7)
-    bottom_panel_height = height - top_panel_height
+    # Layout: Occupancy (Left), Frontier (Top Right), Coverage (Bottom Right)
+    main_w = int(w * 0.6)
+    side_w = w - main_w
+    side_h = h // 2
 
-    # 2. Create coordinate transform
-    transform = CoordinateTransform(
-        metadata['map_bounds'],
-        metadata['grid_resolution'],
-        (panel_width, top_panel_height),
-        margin=40
-    )
+    transform = CoordinateTransform(metadata['map_bounds'], metadata['grid_resolution'], (main_w, h))
+    side_transform = CoordinateTransform(metadata['map_bounds'], metadata['grid_resolution'], (side_w, side_h))
 
-    # 3. Render panels
-    occupancy_panel = render_occupancy_grid(frame, metadata, transform, (panel_width, top_panel_height))
-    frontier_panel = render_frontier_map(frame, metadata, transform, (panel_width, top_panel_height))
-    coverage_panel = render_coverage_graph(frames, frame_idx, (width, bottom_panel_height), max_steps)
+    # Render Panels
+    occ = render_occupancy_grid(frame, metadata, transform, (main_w, h))
+    front = render_frontier_map(frame, metadata, side_transform, (side_w, side_h))
+    cov = render_coverage_graph(frames, frame_idx, (side_w, side_h), max_steps)
 
-    # 4. Composite final frame
-    final_frame = np.full((height, width, 3), COLOR_BACKGROUND, dtype=np.uint8)
+    # Composite
+    final = np.zeros((h, w, 3), dtype=np.uint8)
+    final[0:h, 0:main_w] = occ
+    final[0:side_h, main_w:w] = front
+    final[side_h:h, main_w:w] = cov
 
-    final_frame[0:top_panel_height, 0:panel_width] = occupancy_panel
-    final_frame[0:top_panel_height, panel_width:width] = frontier_panel
-    final_frame[top_panel_height:height, 0:width] = coverage_panel
+    # Dividers
+    cv2.line(final, (main_w, 0), (main_w, h), (100, 100, 100), 2)
+    cv2.line(final, (main_w, side_h), (w, side_h), (100, 100, 100), 2)
 
-    # 5. Draw panel borders
-    cv2.line(final_frame, (panel_width, 0), (panel_width, top_panel_height), (100, 100, 100), 2)
-    cv2.line(final_frame, (0, top_panel_height), (width, top_panel_height), (100, 100, 100), 2)
-
-    # 6. Draw title bar
+    # Title bar
     env_config = metadata['env_config']
     title = f"Simulation: {env_config['env_type']} {env_config['maze_size']} | {env_config['num_robots']} robots | Frame {frame_idx}/{len(frames)-1}"
-    cv2.rectangle(final_frame, (0, 0), (width, 30), (50, 50, 50), -1)
-    cv2.putText(final_frame, title, (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+    cv2.rectangle(final, (0, 0), (w, 30), (50, 50, 50), -1)
+    cv2.putText(final, title, (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
 
-    return final_frame
+    return final
 
 
-# === PARALLEL PROCESSING WORKERS ===
+# === PARALLEL WORKERS ===
 
-def _worker_init(log_filepath, shared_output_size, shared_max_steps):
-    """Initialize worker process with shared data."""
-    global _frames, _metadata, _output_size, _max_steps
-
-    data = SimulationLogger.load(log_filepath)
-    _metadata = data['metadata']
+def _worker_init(log_path, out_size, max_s):
+    global _frames, _meta, _size, _max
+    data = SimulationLogger.load(log_path) # Uses fast load
     _frames = data['frames']
+    _meta = data['metadata']
+    _size = out_size
+    _max = max_s
 
-    _output_size = shared_output_size
-    _max_steps = shared_max_steps
+def _worker_render(idx):
+    return render_single_frame(idx, _frames, _meta, _size, _max)
 
-
-def _worker_render(frame_idx):
-    """Worker function that uses global shared data."""
-    return render_single_frame(frame_idx, _frames, _metadata, _output_size, _max_steps)
-
-
-def print_progress(current, total, start_time, bar_length=40):
-    """Print progress bar to console."""
+def print_progress_bar(current, total, start_time, bar_length=40):
+    """Print a progress bar with statistics."""
     elapsed = time.time() - start_time
     progress = current / total
     fps = current / elapsed if elapsed > 0 else 0
@@ -477,134 +407,49 @@ def print_progress(current, total, start_time, bar_length=40):
 
     print(f'\r  [{bar}] {current}/{total} ({progress*100:.0f}%) | {fps:.1f} fps | ETA: {eta:.0f}s    ', end='', flush=True)
 
-
-# === MAIN RENDERING FUNCTION ===
-
 def render_video_from_log(log_filepath, num_workers=None):
-    """
-    Render simulation log to MP4 video.
+    """Render video from log file."""
+    if num_workers is None: num_workers = 4
 
-    Args:
-        log_filepath: Path to .npz log file
-        num_workers: Number of parallel workers (default: 4)
-
-    Returns:
-        Path to output video file
-    """
-    # 1. Setup output path
-    log_basename = os.path.basename(log_filepath).replace('.npz', '.mp4')
-    log_dir = os.path.dirname(log_filepath)
-
-    if os.path.basename(log_dir) == 'logs':
-        logs_dir = log_dir
-    else:
-        logs_dir = os.path.join(log_dir or '.', 'logs')
-
-    os.makedirs(logs_dir, exist_ok=True)
-    output_path = os.path.join(logs_dir, log_basename)
-
-    # 2. Load log data
-    fps = 30
-    output_size = (1280, 960)
-
-    print(f"Loading log file: {log_filepath}")
-    print(f"Output will be saved to: {output_path}")
-
+    print(f"Loading: {log_filepath}")
     data = SimulationLogger.load(log_filepath)
-    metadata = data['metadata']
     frames = data['frames']
-    num_frames = len(frames)
+    metadata = data['metadata']
+    max_steps = frames[-1]['step']
 
-    print(f"  Loaded {num_frames} frames")
+    print(f"  Loaded {len(frames)} frames")
     print(f"  Environment: {metadata['env_config']['env_type']} {metadata['env_config']['maze_size']}")
     print(f"  Robots: {metadata['env_config']['num_robots']}")
 
-    max_steps = max(2000, frames[-1]['step'])
-
-    # 3. Setup video writer
+    out_path = log_filepath.replace('.npz', '.mp4')
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    video_writer = cv2.VideoWriter(output_path, fourcc, fps, output_size)
+    writer = cv2.VideoWriter(out_path, fourcc, 30, (1280, 720))
 
-    if not video_writer.isOpened():
-        raise RuntimeError(f"Failed to open video writer for {output_path}")
+    print(f"  Rendering to: {out_path}")
+    print(f"  Using {num_workers} parallel workers...")
 
     start_time = time.time()
 
-    if num_workers is None:
-        num_workers = 4
+    with Pool(num_workers, _worker_init, (log_filepath, (1280, 720), max_steps)) as pool:
+        for i, img in enumerate(pool.imap(_worker_render, range(len(frames)))):
+            writer.write(img)
+            if i % 10 == 0 or i == len(frames) - 1:
+                print_progress_bar(i + 1, len(frames), start_time)
 
-    use_parallel = num_workers > 1
-
-    # 4. Render frames (parallel or sequential)
-    if use_parallel:
-        print(f"  Rendering with {num_workers} parallel workers...")
-        print(f"  (If this hangs, try with -j 1 for sequential rendering)")
-
-        try:
-            frames_written = 0
-
-            with Pool(
-                processes=num_workers,
-                initializer=_worker_init,
-                initargs=(log_filepath, output_size, max_steps)
-            ) as pool:
-                for frame_img in pool.imap(_worker_render, range(num_frames)):
-                    video_writer.write(frame_img)
-                    frames_written += 1
-
-                    if frames_written % 10 == 0 or frames_written == num_frames:
-                        print_progress(frames_written, num_frames, start_time)
-
-        except Exception as e:
-            print(f"\n  Parallel rendering failed: {e}")
-            print("  Falling back to sequential rendering...")
-            video_writer.release()
-            video_writer = cv2.VideoWriter(output_path, fourcc, fps, output_size)
-            use_parallel = False
-
-    if not use_parallel:
-        print(f"  Rendering sequentially...")
-        for i in range(num_frames):
-            frame_img = render_single_frame(i, frames, metadata, output_size, max_steps)
-            video_writer.write(frame_img)
-
-            if i % 10 == 0 or i == num_frames - 1:
-                print_progress(i + 1, num_frames, start_time)
-
-    # 5. Finalize video
-    video_writer.release()
-    print()
+    writer.release()
 
     elapsed = time.time() - start_time
-    file_size = os.path.getsize(output_path) / (1024 * 1024)
+    file_size = os.path.getsize(out_path) / (1024 * 1024)
 
-    print(f"\n  Video saved: {output_path}")
+    print(f"\n\n  ✓ Video saved: {out_path}")
     print(f"  File size: {file_size:.2f} MB")
-    print(f"  Render time: {elapsed:.1f}s ({num_frames/elapsed:.1f} fps)")
-
-    return output_path
-
-
-def generate_video_from_log_opencv(log_filepath, video_path=None, fps=30, dpi=100, num_workers=None):
-    """Drop-in replacement for matplotlib-based video generation."""
-    return render_video_from_log(log_filepath, num_workers=num_workers)
-
-
-# === CLI INTERFACE ===
+    print(f"  Render time: {elapsed:.1f}s ({len(frames)/elapsed:.1f} fps)")
+    print("  Done.")
 
 if __name__ == "__main__":
-    multiprocessing.freeze_support()
-
     import argparse
-
-    parser = argparse.ArgumentParser(
-        description="Render simulation log to MP4 video using OpenCV",
-        epilog="Output will be saved as <log_file>.mp4 at 30fps with 1280x960 resolution"
-    )
-    parser.add_argument("log_file", help="Path to the .npz log file")
-    parser.add_argument("-j", "--jobs", type=int, default=None,
-                        help="Number of parallel workers (default: auto, use 1 for sequential)")
-
+    parser = argparse.ArgumentParser()
+    parser.add_argument("log_file")
+    parser.add_argument("-j", "--jobs", type=int, default=4)
     args = parser.parse_args()
-
-    render_video_from_log(args.log_file, num_workers=args.jobs)
+    render_video_from_log(args.log_file, args.jobs)
