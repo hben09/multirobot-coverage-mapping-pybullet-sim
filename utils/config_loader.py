@@ -61,22 +61,3 @@ def load_config(config_path="config/default.yaml") -> SimulationConfig:
         return config
     except (KeyError, TypeError) as e:
         raise ValueError(f"Invalid configuration format: {e}")
-
-
-def load_config_dict(config_path="config/default.yaml") -> dict:
-    """
-    Load configuration as a raw dictionary (legacy support).
-
-    Args:
-        config_path: Path to the YAML configuration file.
-
-    Returns:
-        dict: Raw configuration dictionary.
-    """
-    if not os.path.exists(config_path):
-        raise FileNotFoundError(f"Config file not found: {config_path}")
-
-    with open(config_path, 'r') as f:
-        config = yaml.safe_load(f)
-
-    return config
