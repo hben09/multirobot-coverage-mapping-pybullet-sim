@@ -138,8 +138,8 @@ class SimulationLogger:
             'num_frames': len(self.frames),
         }
 
-        print("Compressing and saving log file (this should be fast now)...")
-        np.savez_compressed(filepath, **save_data)
+        print("Saving log file (uncompressed for maximum speed)...")
+        np.savez(filepath, **save_data)
         
         file_size_mb = os.path.getsize(filepath) / 1024 / 1024
         print(f"\nSimulation log saved to: {filepath}")
