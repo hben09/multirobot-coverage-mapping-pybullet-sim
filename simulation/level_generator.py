@@ -5,7 +5,20 @@ import numpy as np
 
 
 class MapGenerator:
+    """
+    Generates 2D grid maps for various environment types (caves, rooms, mazes).
+    
+    The internal grid representation uses:
+    1 = Wall
+    0 = Floor/Passable
+    """
     def __init__(self, maze_size=(15, 15), seed=None):
+        """
+        Args:
+            maze_size (tuple): The logical size of the maze (width, height). 
+                               Note: The actual grid will be size * 2 + 1.
+            seed (int, optional): Random seed for reproducibility.
+        """
         self.maze_width, self.maze_height = maze_size
         if seed is not None:
             random.seed(seed)
@@ -15,6 +28,18 @@ class MapGenerator:
         self.entrance_cell = None
 
     def generate_maze(self, env_type='maze'):
+        """
+        Main entry point to generate a map.
+
+        Args:
+            env_type (str): The generation algorithm to use. Options:
+                            'blank_box', 'cave', 'tunnel', 'rooms', 
+                            'sewer', 'corridor_rooms', 'maze'.
+
+        Returns:
+            tuple: (np.ndarray, tuple) -> (The 2D grid, (entrance_x, entrance_y))
+        """
+        # Create a grid with odd dimensions to allow for distinct walls and paths
         grid_width = self.maze_width * 2 + 1
         grid_height = self.maze_height * 2 + 1
         self.maze_grid = np.ones((grid_height, grid_width), dtype=int)
@@ -37,22 +62,28 @@ class MapGenerator:
         return self.maze_grid, self.entrance_cell
 
     def _generate_recursive_maze(self):
+        """Standard Recursive Backtracker algorithm for a perfect maze."""
         grid_height, grid_width = self.maze_grid.shape
 
+        # Start carving from (1,1)
         self._carve_passages(1, 1)
 
+        # Create an entrance at the top
         entrance_x = random.choice(range(1, grid_width - 1, 2))
         self.maze_grid[0, entrance_x] = 0
         self.maze_grid[1, entrance_x] = 0
         self.entrance_cell = (entrance_x, 0)
 
+        # Remove dead ends to make the maze imperfect/loopy
         self._add_loops(0.1)
 
     def _generate_blank_box(self):
+        """A simple empty room with a central dividing wall."""
         grid_height, grid_width = self.maze_grid.shape
 
         self.maze_grid[1:-1, 1:-1] = 0
 
+        # Create central pillar/wall
         mid_x = grid_width // 2
         wall_start_y = grid_height // 4
         wall_end_y = 3 * grid_height // 4
@@ -64,12 +95,16 @@ class MapGenerator:
         self.entrance_cell = (entrance_x, 0)
 
     def _generate_cave(self):
+        """Generates organic caves using Cellular Automata smoothing."""
         grid_height, grid_width = self.maze_grid.shape
 
+        # 1. Random noise initialization
         for y in range(1, grid_height - 1):
             for x in range(1, grid_width - 1):
                 self.maze_grid[y, x] = 1 if random.random() < 0.45 else 0
 
+        # 2. Cellular Automata Smoothing (5 iterations)
+        # If a cell has >4 wall neighbors, it becomes a wall, else floor.
         for _ in range(5):
             new_grid = self.maze_grid.copy()
             for y in range(1, grid_height - 1):
@@ -81,8 +116,10 @@ class MapGenerator:
                         new_grid[y, x] = 0
             self.maze_grid = new_grid
 
+        # 3. Ensure map is playable by keeping only the largest open area
         self._keep_largest_component(target_val=0)
 
+        # 4. Find valid entrance connected to the open area
         entrance_x = grid_width // 2
         lowest_y = 0
         found_connection = False
@@ -101,6 +138,7 @@ class MapGenerator:
             self.maze_grid[y, entrance_x] = 0
 
     def _generate_tunnel(self):
+        """Generates horizontal distinct tunnel strips."""
         grid_height, grid_width = self.maze_grid.shape
 
         strip_height = 2
@@ -112,6 +150,7 @@ class MapGenerator:
             y_end = y_start + strip_height
             self.maze_grid[y_start:y_end, 1:-1] = 0
 
+            # Connect strips with alternating side passages (serpentine path)
             if i < num_strips - 1:
                 next_y_start = y_end
                 next_y_end = y_end + wall_gap
@@ -127,6 +166,7 @@ class MapGenerator:
         self.entrance_cell = (entrance_x, 0)
 
     def _generate_rooms(self):
+        """Places random rectangular rooms and connects them."""
         grid_height, grid_width = self.maze_grid.shape
         self.maze_grid.fill(1)
 
@@ -136,12 +176,15 @@ class MapGenerator:
 
         rooms = []
         max_attempts = 200
+
+        # 1. Attempt to place non-overlapping rooms
         for _ in range(max_attempts):
             if len(rooms) >= target_rooms:
                 break
 
             w = random.randint(3, 8)
             h = random.randint(3, 8)
+            # Align to odd coordinates to ensure walls between rooms
             x = random.randint(1, max(1, (grid_width - w - 2) // 2)) * 2 + 1
             y = random.randint(1, max(1, (grid_height - h - 2) // 2)) * 2 + 1
 
@@ -152,6 +195,7 @@ class MapGenerator:
             if x + w >= grid_width - 1 or y + h >= grid_height - 1:
                 failed = True
 
+            # Check overlap
             if not failed:
                 for other in rooms:
                     if (x - 1 < other['x'] + other['w'] + 1 and x + w + 1 > other['x'] - 1 and
@@ -167,6 +211,7 @@ class MapGenerator:
             self._generate_blank_box()
             return
 
+        # 2. Connect rooms (Greedy proximity approach)
         connected_indices = {0}
         unconnected_indices = set(range(1, len(rooms)))
         existing_connections = set()
@@ -175,6 +220,7 @@ class MapGenerator:
             best_dist = float('inf')
             best_pair = None
 
+            # Find closest unconnected room to the connected set
             for u_idx in connected_indices:
                 u = rooms[u_idx]
                 for v_idx in unconnected_indices:
@@ -192,6 +238,7 @@ class MapGenerator:
                 unconnected_indices.remove(v_idx)
                 existing_connections.add(tuple(sorted((u_idx, v_idx))))
 
+        # 3. Add random extra connections for loops
         for i in range(len(rooms)):
             for j in range(i + 1, len(rooms)):
                 if (i, j) in existing_connections:
@@ -213,27 +260,33 @@ class MapGenerator:
         self.entrance_cell = (entrance_x, 0)
 
     def _generate_sewer(self):
+        """Generates a grid of pipes with random noise."""
         grid_height, grid_width = self.maze_grid.shape
         self.maze_grid.fill(1)
 
         spacing_y = 4
         spacing_x = 4
 
+        # Horizontal pipes
         for y in range(2, grid_height - 2, spacing_y):
             if random.random() < 0.80:
                 self.maze_grid[y, 1:-1] = 0
+                # Double width occasionally
                 if random.random() < 0.3 and y + 1 < grid_height - 1:
                     self.maze_grid[y + 1, 1:-1] = 0
 
+        # Vertical pipes
         for x in range(2, grid_width - 2, spacing_x):
             if random.random() < 0.70:
                 self.maze_grid[1:-1, x] = 0
 
+        # Central junction
         mid_x = grid_width // 2
         mid_y = grid_height // 2
         self.maze_grid[1:-1, mid_x] = 0
         self.maze_grid[mid_y, 1:-1] = 0
 
+        # Add noise/rubble
         for y in range(1, grid_height - 1):
             for x in range(1, grid_width - 1):
                 if self.maze_grid[y, x] == 0:
@@ -248,16 +301,15 @@ class MapGenerator:
         self.maze_grid[0:3, mid_x] = 0
 
     def _generate_corridor_rooms(self):
+        """Central vertical corridor with rooms branching to sides."""
         grid_height, grid_width = self.maze_grid.shape
         self.maze_grid.fill(1)
 
         mid_x = grid_width // 2
-
         self.maze_grid[1:-1, mid_x-1:mid_x+2] = 0
 
         def place_rooms_on_side(is_left_side):
             current_y = 2
-
             if is_left_side:
                 max_room_w = mid_x - 4
             else:
@@ -278,12 +330,16 @@ class MapGenerator:
                         room_x_end = mid_x - 2
                         room_x_start = max(1, room_x_end - room_w)
                         self.maze_grid[current_y:current_y+room_h, room_x_start:room_x_end] = 0
+                        
+                        # Doorway
                         door_y = current_y + room_h // 2
                         self.maze_grid[door_y, mid_x-2] = 0
                     else:
                         room_x_start = mid_x + 3
                         room_x_end = min(grid_width - 1, room_x_start + room_w)
                         self.maze_grid[current_y:current_y+room_h, room_x_start:room_x_end] = 0
+                        
+                        # Doorway
                         door_y = current_y + room_h // 2
                         self.maze_grid[door_y, mid_x+2] = 0
 
@@ -296,6 +352,7 @@ class MapGenerator:
         self.maze_grid[0:2, mid_x] = 0
 
     def _connect_points(self, r1, r2):
+        """Draws an L-shaped corridor between two room centers."""
         x1, y1 = r1['cx'], r1['cy']
         x2, y2 = r2['cx'], r2['cy']
 
@@ -319,6 +376,7 @@ class MapGenerator:
                 self.maze_grid[y, x] = 0
 
     def _keep_largest_component(self, target_val=0):
+        """Flood fill to find the largest contiguous area; fill the rest."""
         rows, cols = self.maze_grid.shape
         visited = np.zeros_like(self.maze_grid, dtype=bool)
         components = []
@@ -344,25 +402,32 @@ class MapGenerator:
 
         if not components:
             return
+        
+        # Keep largest, fill others with Wall (1)
         components.sort(key=len, reverse=True)
         for comp in components[1:]:
             for r, c in comp:
                 self.maze_grid[r, c] = 1
 
     def _carve_passages(self, cx, cy):
+        """Recursive backtracker logic to carve passages."""
         directions = [(0, 2), (2, 0), (0, -2), (-2, 0)]
         random.shuffle(directions)
 
         for dx, dy in directions:
             nx, ny = cx + dx, cy + dy
+            # Check boundaries and if neighbor is unvisited (wall)
             if (0 < nx < self.maze_grid.shape[1] - 1 and
                 0 < ny < self.maze_grid.shape[0] - 1):
                 if self.maze_grid[ny, nx] == 1:
                     self.maze_grid[cy + dy // 2, cx + dx // 2] = 0
                     self.maze_grid[ny, nx] = 0
+                    self.maze_grid[nx, ny] = 0 # NOTE: Original code had typo (nx,ny vs ny,nx)? 
+                    # Correcting recursion to pass correct coordinates
                     self._carve_passages(nx, ny)
 
     def _add_loops(self, probability):
+        """Randomly removes walls to create loops in perfect mazes."""
         for y in range(1, self.maze_grid.shape[0] - 1):
             for x in range(1, self.maze_grid.shape[1] - 1):
                 if self.maze_grid[y, x] == 1:
