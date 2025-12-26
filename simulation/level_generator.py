@@ -1,7 +1,7 @@
 """Procedural map generation utilities for grid-based environments.
 
 This module provides the MapGenerator class, which utilizes various algorithms
-(Cellular Automata, Recursive Backtracking, Room Placement) to generate 
+(Cellular Automata, Recursive Backtracking, Room Placement) to generate
 2D binary grid maps.
 """
 
@@ -36,12 +36,12 @@ class MapGenerator:
         self.maze_grid = None
         self.entrance_cell = None
 
-    def generate_maze(self, env_type='maze'):
+    def generate_maze(self, env_type="maze"):
         """Main factory method to generate a map based on environment type.
 
         Args:
             env_type (str): The style of map to generate. Options include:
-                'blank_box', 'cave', 'tunnel', 'rooms', 'sewer', 
+                'blank_box', 'cave', 'tunnel', 'rooms', 'sewer',
                 'corridor_rooms', or default 'maze'.
 
         Returns:
@@ -51,17 +51,17 @@ class MapGenerator:
         grid_height = self.maze_height * 2 + 1
         self.maze_grid = np.ones((grid_height, grid_width), dtype=int)
 
-        if env_type == 'blank_box':
+        if env_type == "blank_box":
             self._generate_blank_box()
-        elif env_type == 'cave':
+        elif env_type == "cave":
             self._generate_cave()
-        elif env_type == 'tunnel':
+        elif env_type == "tunnel":
             self._generate_tunnel()
-        elif env_type == 'rooms':
+        elif env_type == "rooms":
             self._generate_rooms()
-        elif env_type == 'sewer':
+        elif env_type == "sewer":
             self._generate_sewer()
-        elif env_type == 'corridor_rooms':
+        elif env_type == "corridor_rooms":
             self._generate_corridor_rooms()
         else:
             self._generate_recursive_maze()
@@ -118,7 +118,10 @@ class MapGenerator:
             new_grid = self.maze_grid.copy()
             for y in range(1, grid_height - 1):
                 for x in range(1, grid_width - 1):
-                    neighbors = np.sum(self.maze_grid[y-1:y+2, x-1:x+2]) - self.maze_grid[y, x]
+                    neighbors = (
+                        np.sum(self.maze_grid[y - 1 : y + 2, x - 1 : x + 2])
+                        - self.maze_grid[y, x]
+                    )
                     if neighbors > 4:
                         new_grid[y, x] = 1
                     elif neighbors < 4:
@@ -194,8 +197,14 @@ class MapGenerator:
             x = random.randint(1, max(1, (grid_width - w - 2) // 2)) * 2 + 1
             y = random.randint(1, max(1, (grid_height - h - 2) // 2)) * 2 + 1
 
-            new_room = {'x': x, 'y': y, 'w': w, 'h': h,
-                        'cx': x + w // 2, 'cy': y + h // 2}
+            new_room = {
+                "x": x,
+                "y": y,
+                "w": w,
+                "h": h,
+                "cx": x + w // 2,
+                "cy": y + h // 2,
+            }
 
             # Check boundaries
             failed = False
@@ -205,13 +214,17 @@ class MapGenerator:
             # Check overlap
             if not failed:
                 for other in rooms:
-                    if (x - 1 < other['x'] + other['w'] + 1 and x + w + 1 > other['x'] - 1 and
-                            y - 1 < other['y'] + other['h'] + 1 and y + h + 1 > other['y'] - 1):
+                    if (
+                        x - 1 < other["x"] + other["w"] + 1
+                        and x + w + 1 > other["x"] - 1
+                        and y - 1 < other["y"] + other["h"] + 1
+                        and y + h + 1 > other["y"] - 1
+                    ):
                         failed = True
                         break
 
             if not failed:
-                self.maze_grid[y:y+h, x:x+w] = 0
+                self.maze_grid[y : y + h, x : x + w] = 0
                 rooms.append(new_room)
 
         if not rooms:
@@ -224,14 +237,14 @@ class MapGenerator:
         existing_connections = set()
 
         while unconnected_indices:
-            best_dist = float('inf')
+            best_dist = float("inf")
             best_pair = None
 
             for u_idx in connected_indices:
                 u = rooms[u_idx]
                 for v_idx in unconnected_indices:
                     v = rooms[v_idx]
-                    dist = (u['cx'] - v['cx'])**2 + (u['cy'] - v['cy'])**2
+                    dist = (u["cx"] - v["cx"]) ** 2 + (u["cy"] - v["cy"]) ** 2
 
                     if dist < best_dist:
                         best_dist = dist
@@ -251,7 +264,7 @@ class MapGenerator:
                     continue
 
                 r1, r2 = rooms[i], rooms[j]
-                dist = (r1['cx'] - r2['cx'])**2 + (r1['cy'] - r2['cy'])**2
+                dist = (r1["cx"] - r2["cx"]) ** 2 + (r1["cy"] - r2["cy"]) ** 2
 
                 if dist < (min(grid_width, grid_height) // 2) ** 2:
                     if random.random() < 0.15:
@@ -259,9 +272,9 @@ class MapGenerator:
                         existing_connections.add((i, j))
 
         first_room = rooms[0]
-        entrance_x = first_room['cx']
+        entrance_x = first_room["cx"]
         self.maze_grid[0, entrance_x] = 0
-        for y in range(0, first_room['y']):
+        for y in range(0, first_room["y"]):
             self.maze_grid[y, entrance_x] = 0
         self.entrance_cell = (entrance_x, 0)
 
@@ -310,7 +323,7 @@ class MapGenerator:
         self.maze_grid.fill(1)
 
         mid_x = grid_width // 2
-        self.maze_grid[1:-1, mid_x-1:mid_x+2] = 0
+        self.maze_grid[1:-1, mid_x - 1 : mid_x + 2] = 0
 
         def place_rooms_on_side(is_left_side):
             current_y = 2
@@ -334,15 +347,19 @@ class MapGenerator:
                     if is_left_side:
                         room_x_end = mid_x - 2
                         room_x_start = max(1, room_x_end - room_w)
-                        self.maze_grid[current_y:current_y+room_h, room_x_start:room_x_end] = 0
+                        self.maze_grid[
+                            current_y : current_y + room_h, room_x_start:room_x_end
+                        ] = 0
                         door_y = current_y + room_h // 2
-                        self.maze_grid[door_y, mid_x-2] = 0
+                        self.maze_grid[door_y, mid_x - 2] = 0
                     else:
                         room_x_start = mid_x + 3
                         room_x_end = min(grid_width - 1, room_x_start + room_w)
-                        self.maze_grid[current_y:current_y+room_h, room_x_start:room_x_end] = 0
+                        self.maze_grid[
+                            current_y : current_y + room_h, room_x_start:room_x_end
+                        ] = 0
                         door_y = current_y + room_h // 2
-                        self.maze_grid[door_y, mid_x+2] = 0
+                        self.maze_grid[door_y, mid_x + 2] = 0
 
                 current_y += room_h + 2
 
@@ -358,8 +375,8 @@ class MapGenerator:
 
     def _connect_points(self, r1, r2):
         """Connects two points (dicts with 'cx','cy') via an L-shaped corridor."""
-        x1, y1 = r1['cx'], r1['cy']
-        x2, y2 = r2['cx'], r2['cy']
+        x1, y1 = r1["cx"], r1["cy"]
+        x2, y2 = r2["cx"], r2["cy"]
 
         if random.random() < 0.5:
             self._carve_h_corridor(x1, x2, y1)
@@ -400,8 +417,12 @@ class MapGenerator:
                         component.append((curr_r, curr_c))
                         for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
                             nr, nc = curr_r + dr, curr_c + dc
-                            if (0 <= nr < rows and 0 <= nc < cols and
-                                    self.maze_grid[nr, nc] == target_val and not visited[nr, nc]):
+                            if (
+                                0 <= nr < rows
+                                and 0 <= nc < cols
+                                and self.maze_grid[nr, nc] == target_val
+                                and not visited[nr, nc]
+                            ):
                                 visited[nr, nc] = True
                                 queue.append((nr, nc))
 
@@ -409,7 +430,7 @@ class MapGenerator:
 
         if not components:
             return
-        
+
         # Keep largest, fill others
         components.sort(key=len, reverse=True)
         for comp in components[1:]:
@@ -423,8 +444,10 @@ class MapGenerator:
 
         for dx, dy in directions:
             nx, ny = cx + dx, cy + dy
-            if (0 < nx < self.maze_grid.shape[1] - 1 and
-                    0 < ny < self.maze_grid.shape[0] - 1):
+            if (
+                0 < nx < self.maze_grid.shape[1] - 1
+                and 0 < ny < self.maze_grid.shape[0] - 1
+            ):
                 if self.maze_grid[ny, nx] == 1:
                     self.maze_grid[cy + dy // 2, cx + dx // 2] = 0
                     self.maze_grid[ny, nx] = 0
