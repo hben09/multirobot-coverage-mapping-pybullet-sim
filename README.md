@@ -17,6 +17,13 @@ The project is organized into modular components, separating hardware drivers, a
 | **`simulation/`** | Handles procedural level generation (`MapGenerator`), the physics engine interface, and the overall simulation manager. |
 | **`visualization/`** | Tools for real-time monitoring (`RealtimeVisualizer`), data logging (`SimulationLogger`), and offline playback (`playback.py`). |
 
+## Key Features
+
+* **Procedural Generation**: Capable of generating 7 distinct environment types (`maze`, `cave`, `rooms`, `sewer`, `tunnel`, `corridor_rooms`, `blank_box`) to test robustness.
+* **Market-Based Coordination**: Robots bid on frontiers based on a utility function that balances distance, frontier size, and their current heading.
+* **Stuck Recovery**: An integrated stuck detector monitors robot motion and triggers recovery maneuvers if a robot gets trapped by obstacles.
+* **Optimized Performance**: Uses `Numba` JIT compilation for high-performance LIDAR ray-casting and A* pathfinding.
+
 ## Prerequisites
 
 To install and run this project, you will need a Python environment with the following dependencies:
