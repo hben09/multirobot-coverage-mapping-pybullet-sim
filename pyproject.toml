@@ -1,0 +1,14 @@
+[project]
+name = "multirobot-coverage-mapping-pybullet-sim"
+version = "0.1.0"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pybullet",
+    "numpy",
+    "numba",
+    "scipy",
+    "matplotlib",
+    "opencv-python",
+    "pyyaml",
+]
