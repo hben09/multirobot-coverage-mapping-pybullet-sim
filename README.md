@@ -31,6 +31,8 @@ The project is organized into modular components, separating hardware drivers, a
 * **Python**: Version 3.11 or higher.
 * [**uv**](https://docs.astral.sh/uv/): Fast Python package manager (recommended).
 
+> **Note (macOS):** On macOS, some dependencies (e.g., PyBullet) require a Conda environment. Install [Miniforge](https://github.com/conda-forge/miniforge) or [Miniconda](https://docs.anaconda.com/miniconda/), create a Conda environment, and then run `uv sync` from within it.
+
 ## Installation and Run Instructions
 
 Install dependencies and run using `uv`:
